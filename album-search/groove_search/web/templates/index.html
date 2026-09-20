@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block headerextra %}
+  {% if registry.is_configured %}
+    <div class="registry-chip">
+      <strong>{{ registry.searchable|length }}</strong> shops · {{ registry.location }}
+      {% if registry.broken %}<span class="badge broken">{{ registry.broken|length }} broken</span>{% endif %}
+    </div>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+{% if not registry.is_configured and job.idle %}
+  <section class="card setup-intro">
+    <h2>First, build the shop registry</h2>
+    <p>
+      groove-search does not ship with a hand-written list of shops. It calibrates every
+      candidate shop for your location — finding its search endpoint and learning how to
+      read its results — then measures how much of a benchmark basket each one actually
+      stocks, and keeps the {{ top_n }} best supplied.
+    </p>
+    <form method="post" action="/setup" class="row">
+      <label for="location">Location</label>
+      <select name="location" id="location">
+        {% for loc in locations %}<option value="{{ loc }}">{{ loc }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="primary">Run setup</button>
+    </form>
+    <p class="hint">Takes a few minutes: it is deliberately slow so no shop is hammered.</p>
+  </section>
+{% endif %}
+
+{% if job.running or job.finished_at %}
+  <section id="setup-progress"
+           {% if job.running %}hx-get="/setup/progress" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+    {% include "partials/setup.html" %}
+  </section>
+{% endif %}
+
+{% if registry.is_configured %}
+  <section class="card">
+    <h2>What are you looking for?</h2>
+    <form hx-post="/search" hx-target="#results" hx-indicator="#spinner">
+      <textarea name="albums" rows="5" spellcheck="false"
+                placeholder="One album per line, e.g.&#10;Pet Fox - A face in your life">{{ example }}</textarea>
+      <div class="row">
+        <button type="submit" class="primary">Find best prices</button>
+        <span id="spinner" class="htmx-indicator">searching every shop…</span>
+      </div>
+      <p class="hint">
+        <code>Artist - Title</code> works best. A bare artist name finds anything they released.
+        Add <code>(vinyl)</code> or <code>(CD)</code> to demand a format.
+      </p>
+    </form>
+  </section>
+
+  <section id="results"></section>
+
+  <section class="card">
+    <details>
+      <summary>Shop registry &amp; health</summary>
+      <div id="shops" hx-get="/shops" hx-trigger="load">Loading…</div>
+    </details>
+  </section>
+{% endif %}
+{% endblock %}

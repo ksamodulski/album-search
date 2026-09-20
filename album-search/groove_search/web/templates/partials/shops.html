@@ -1,0 +1,40 @@
+<div id="shops">
+  {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+  <table class="shops">
+    <thead><tr><th>shop</th><th>status</th><th>coverage</th><th>last offers</th><th>note</th><th></th></tr></thead>
+    <tbody>
+    {% for shop in registry.shops %}
+      {% set health = registry.health_of(shop.id) %}
+      {% set cooling = registry.repair_blocked(shop.id) %}
+      <tr>
+        <td><a href="{{ shop.base_url }}" target="_blank" rel="noopener noreferrer">{{ shop.name }}</a></td>
+        <td><span class="badge status {{ health.status }}">{{ health.status }}</span></td>
+        <td>{{ "%.0f"|format(health.coverage * 100) }}%</td>
+        <td>{{ health.last_offers }}</td>
+        <td class="hint">
+          {{ health.last_error or shop.note or "" }}
+          {% if cooling %}
+            <span class="hint">- recipe still fresh, so the shop is refusing us; treated as not working</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if cooling %}
+            <button disabled title="Recipe is newer than {{ recalibrate_after_days }} days. Force with: groove recalibrate {{ shop.id }} --force">Re-learn</button>
+          {% else %}
+            <button hx-post="/shops/{{ shop.id }}/recalibrate" hx-target="#shops" hx-swap="outerHTML"
+                    hx-indicator="#recal-{{ shop.id }}"
+                    class="{{ 'primary' if health.needs_recalibration else '' }}">Re-learn</button>
+            <span id="recal-{{ shop.id }}" class="htmx-indicator">…</span>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">
+    Re-learning re-runs calibration against the live shop and replaces its stored recipe.
+    Use it when a shop redesigns and its results stop being read correctly. A recipe younger
+    than {{ recalibrate_after_days }} days is left alone: a shop that broke that soon is
+    blocking us, not rebuilt, and re-probing it only deepens the block.
+  </p>
+</div>

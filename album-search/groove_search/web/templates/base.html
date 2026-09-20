@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{% block title %}groove-search{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+  <script src="/static/htmx.min.js" defer></script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127909;</text></svg>"/>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="disc" aria-hidden="true"></span>
+      <div>
+        <h1>groove-search</h1>
+        <p class="tagline">best prices on CDs &amp; vinyl, across every shop worth asking</p>
+      </div>
+    </div>
+    {% block headerextra %}{% endblock %}
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <footer>
+    <p>Prices are read live from each shop and may lag behind the shop's own page. Always confirm in the basket.</p>
+  </footer>
+</body>
+</html>

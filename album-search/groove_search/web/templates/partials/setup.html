@@ -1,0 +1,22 @@
+<section id="setup-progress"
+         {% if job.running %}hx-get="/setup/progress" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+  <div class="card">
+    <h2>
+      {% if job.running %}Calibrating shops in {{ job.location }}…{% elif job.error %}Setup failed{% else %}Setup complete{% endif %}
+    </h2>
+    {% if job.error %}
+      <p class="error">{{ job.error }}</p>
+    {% else %}
+      <ul class="progress">
+        {% for line in job.lines %}
+          {% set mark, text = line.split("|", 1) %}
+          <li class="{{ mark }}"><span class="mark">{{ mark }}</span>{{ text }}</li>
+        {% endfor %}
+        {% if job.running %}<li class="pending"><span class="mark">…</span>working</li>{% endif %}
+      </ul>
+    {% endif %}
+    {% if not job.running and not job.error %}
+      <p><strong>{{ job.adopted }}</strong> shops adopted. <a href="/">Start searching →</a></p>
+    {% endif %}
+  </div>
+</section>

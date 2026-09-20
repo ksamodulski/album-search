@@ -1,0 +1,30 @@
+<section id="search-progress"
+         {% if job.running %}hx-get="/search/progress" hx-trigger="every 700ms" hx-swap="outerHTML"{% endif %}>
+  <div class="card">
+    {% if busy is defined and busy %}
+      <p class="hint">A search was already running, so this is its progress — yours will need
+      resubmitting once it finishes.</p>
+    {% endif %}
+    <h2>
+      Searching {{ job.sources|length }} source{{ '' if job.sources|length == 1 else 's' }}…
+      <span class="hint">{{ job.answered }} of {{ job.expected }} answered</span>
+    </h2>
+    {% for album in job.albums %}
+      <h3 class="searching-album">{{ album }}</h3>
+      <ul class="progress searching-sources">
+        {% for source in job.sources %}
+          {% set outcome = job.outcome(album, source) %}
+          <li class="{{ 'ok' if outcome else 'pending' }}">
+            <span class="mark">{{ '✓' if outcome else '…' }}</span>
+            <span class="searching-source">{{ source }}</span>
+            {% if outcome %}
+              <span class="hint">{{ outcome }}</span>
+            {% elif source == web_source_name %}
+              <span class="hint">asking the engines, then opening up to {{ web_max_pages }} pages…</span>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% endfor %}
+  </div>
+</section>

@@ -1,0 +1,132 @@
+{% if error is defined and error %}
+  <div class="card"><p class="error">{{ error }}</p></div>
+{% elif empty %}
+  <div class="card"><p>Nothing to search for — type at least one album.</p></div>
+{% else %}
+  {% for result in results %}
+    <article class="card result {{ 'unavailable' if not result.available else '' }}">
+      <header class="result-head">
+        <h3>{{ result.query.label }}</h3>
+        {% if result.query.format.value != 'any' %}<span class="badge fmt">{{ result.query.format.value }} only</span>{% endif %}
+      </header>
+
+      {% if not result.available %}
+        <p class="not-available">
+          Not available — checked {{ result.shops_searched }} shop{{ '' if result.shops_searched == 1 else 's' }}{% if result.web_report %} and the open web{% endif %}.
+        </p>
+        {% if result.shops_failed %}
+          <p class="hint">Could not reach: {% for f in result.shops_failed %}{{ f.shop_name }}{% if f.error %} ({{ f.error }}){% endif %}{{ ", " if not loop.last }}{% endfor %}</p>
+        {% endif %}
+        {% if not web_enabled %}
+          <p class="hint">Only the calibrated shops were searched. {{ web_hint }}</p>
+        {% endif %}
+      {% else %}
+        {% set best = result.best %}
+        <div class="best">
+          <div class="best-price">
+            <span class="label">{{ "best delivered" if best.landed else "best price" }}</span>
+            <span class="amount">{{ best.landed.total if best.landed else best.price }}</span>
+            {% if best.landed and best.landed.has_extras %}
+              <span class="breakdown hint">
+                est. {{ "%.2f"|format(best.landed.item.amount) }} item
+                {%- if best.landed.shipping and best.landed.shipping.amount %} + {{ "%.2f"|format(best.landed.shipping.amount) }} shipping{% endif %}
+                {%- if best.landed.import_tax and best.landed.import_tax.amount %} + {{ "%.2f"|format(best.landed.import_tax.amount) }} import tax{% endif %}
+              </span>
+            {% endif %}
+          </div>
+          <div class="best-body">
+            <a class="title" href="{{ best.url }}" target="_blank" rel="noopener noreferrer">{{ best.title }}</a>
+            <p class="meta">
+              <span class="shop">{{ best.shop_name }}</span>
+              <span class="badge source {{ 'web' if best.from_open_web else 'known' }}">{{ best.source_label }}</span>
+              {% if best.country and best.country != registry.location %}<span class="badge from">from {{ best.country }}</span>{% endif %}
+              {% if best.format.value != 'any' %}<span class="badge fmt">{{ best.format.value }}</span>{% endif %}
+              <span class="badge stock {{ best.availability.value }}">{{ best.availability.value.replace('_', ' ') }}</span>
+            </p>
+          </div>
+          <a class="buy" href="{{ best.url }}" target="_blank" rel="noopener noreferrer">Open in shop →</a>
+        </div>
+
+        {% if result.alternatives %}
+          <table class="alts">
+            <caption>
+              Other offers
+              {% set saved = result.savings_vs_worst() %}
+              {% if saved and saved > 0 %}— the best one saves <strong>{{ "%.0f"|format(saved) }}%</strong> against the priciest{% endif %}
+              {% if best.landed %}<span class="hint">(delivered cost, shipping estimated)</span>{% endif %}
+            </caption>
+            <tbody>
+            {% for alt in result.alternatives %}
+              <tr>
+                <td class="alt-price">
+                  {{ alt.landed.total if alt.landed else alt.price }}
+                  {% if alt.landed and alt.landed.has_extras %}
+                    <span class="hint">incl. {{ "%.2f"|format(alt.landed.total.amount - alt.landed.item.amount) }} delivery</span>
+                  {% endif %}
+                </td>
+                <td class="alt-delta">
+                  {% if alt.landed and best.landed %}
+                    +{{ "%.0f"|format(alt.landed.total.percent_above(best.landed.total)) }}%
+                  {% elif alt.price.currency == best.price.currency %}
+                    +{{ "%.0f"|format(alt.price.percent_above(best.price)) }}%
+                  {% else %}<span class="hint">other currency</span>{% endif %}
+                </td>
+                <td class="alt-shop">
+                  {{ alt.shop_name }}
+                  <span class="badge source {{ 'web' if alt.from_open_web else 'known' }}">{{ alt.source_label }}</span>
+                  {% if alt.country and alt.country != registry.location %}<span class="badge from">{{ alt.country }}</span>{% endif %}
+                </td>
+                <td class="alt-title">
+                  <a href="{{ alt.url }}" target="_blank" rel="noopener noreferrer">{{ alt.title }}</a>
+                </td>
+                <td>{% if alt.format.value != 'any' %}<span class="badge fmt">{{ alt.format.value }}</span>{% endif %}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="hint">Only one shop had it — no price comparison possible.</p>
+        {% endif %}
+      {% endif %}
+
+      {% if result.reports %}
+        <details class="trace">
+          <summary>How this was searched</summary>
+          <table class="trace-table">
+            <tbody>
+              {% for report in result.shop_reports %}
+                <tr class="{{ 'bad' if not report.ok else ('hit' if report.offers_found else 'miss') }}">
+                  <td class="trace-source">{{ report.shop_name }}</td>
+                  <td class="trace-kind"><span class="badge source known">known shop</span></td>
+                  <td class="trace-what">
+                    {%- if not report.ok %}{{ report.error }}
+                    {%- elif report.offers_found %}{{ report.offers_found }} offer{{ '' if report.offers_found == 1 else 's' }}
+                    {%- else %}no match{% endif -%}
+                  </td>
+                </tr>
+              {% endfor %}
+              {% set web = result.web_report %}
+              {% if web %}
+                <tr class="{{ 'bad' if not web.ok else ('hit' if web.offers_found else 'miss') }}">
+                  <td class="trace-source">{{ web.shop_name }}</td>
+                  <td class="trace-kind"><span class="badge source web">open web</span></td>
+                  <td class="trace-what">
+                    {%- if not web.ok %}{{ web.error }}
+                    {%- elif web.offers_found %}{{ web.offers_found }} offer{{ '' if web.offers_found == 1 else 's' }} from shops nobody seeded
+                    {%- else %}no match{% endif -%}
+                  </td>
+                </tr>
+              {% elif not web_enabled %}
+                <tr class="miss">
+                  <td class="trace-source">open web</td>
+                  <td class="trace-kind"><span class="badge source web">open web</span></td>
+                  <td class="trace-what">not searched — {{ web_hint }}</td>
+                </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </details>
+      {% endif %}
+    </article>
+  {% endfor %}
+{% endif %}

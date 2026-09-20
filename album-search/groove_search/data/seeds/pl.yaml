@@ -1,0 +1,108 @@
+# Candidate shops for location PL.
+#
+# These are only *candidates*. Setup calibrates each one and measures how much
+# of the benchmark basket it actually stocks; dead, unscrapeable or thinly
+# supplied shops drop out on their own, and the best ten are adopted. Add a
+# shop here and re-run setup to consider it.
+#
+# Optional per-shop keys:
+#   search_hint:   a known search URL with {query} in it, tried before any
+#                  guessing - use this when a shop's search is hard to find.
+#   needs_browser: render with Playwright (install the 'browser' extra).
+#   currency:      the shop's own currency, if not the location default.
+location: PL
+currency: PLN
+shops:
+  - id: asfaltshop
+    name: AsfaltShop
+    base_url: https://asfaltshop.pl
+    note: hip-hop, alternative, Polish and US imports
+  - id: combatrock
+    name: Combat Rock
+    base_url: https://combatrock.pl
+    note: indie rock, punk, hardcore, emo - most likely home of niche US titles
+  - id: winylowa
+    name: Winylowa
+    base_url: https://winylowa.pl
+    note: large independent new-vinyl shop, Warsaw
+  - id: gramofonia
+    name: Gramofonia
+    base_url: https://gramofonia.com
+    note: vinyl only, trading since 2012
+  - id: voiceshop
+    name: VoiceShop
+    base_url: https://voiceshop.pl
+  - id: cddvdvinyl
+    name: CD-DVD-VINYL.pl
+    base_url: https://www.cd-dvd-vinyl.pl
+    note: imports to order, broad catalogue
+  - id: tonymuzy
+    name: TonyMuzy
+    base_url: https://tonymuzy.pl
+  - id: przeto
+    name: Przeto
+    base_url: https://przeto.pl
+  - id: winyleonline
+    name: Winyle Online
+    base_url: https://winyle-online.pl
+  - id: masterdisc
+    name: Master Disc
+    base_url: https://masterdisc.com.pl
+  - id: fan
+    name: FaN
+    base_url: https://www.fan.pl
+    note: very large catalogue, CD/DVD/vinyl
+  - id: klubstarejplyty
+    name: Klub Starej Plyty
+    base_url: https://klubstarejplyty.pl
+  - id: vinylmusic
+    name: VinylMusic
+    base_url: https://www.vinylmusic.pl
+  - id: antenakrzyku
+    name: Antena Krzyku
+    base_url: https://antenakrzyku.pl
+    note: independent label shop - punk, hardcore, alternative
+  - id: empik
+    name: Empik
+    base_url: https://www.empik.com
+    note: biggest PL generalist; JavaScript-heavy, may need the browser fetcher
+  - id: dvdmax
+    name: DVDMax
+    base_url: https://dvdmax.pl
+    note: films and music, large CD/vinyl catalogue
+  - id: bonito
+    name: Bonito
+    base_url: https://bonito.pl
+    note: books and media generalist, deep music section
+  - id: gandalf
+    name: Gandalf
+    base_url: https://www.gandalf.com.pl
+    note: books and media generalist
+  # Foreign shops that ship to Poland. Priced in their own currency and
+  # converted only for ranking.
+  - id: juno
+    name: Juno Records
+    base_url: https://www.juno.co.uk
+    currency: GBP
+    country: UK
+  - id: hhv
+    name: HHV
+    base_url: https://www.hhv.de
+    currency: EUR
+    country: DE
+  - id: decks
+    name: Decks.de
+    base_url: https://www.decks.de
+    currency: EUR
+    country: DE
+  - id: rushhour
+    name: Rush Hour
+    base_url: https://rushhour.nl
+    currency: EUR
+    country: NL
+  - id: bandcamp
+    name: Bandcamp
+    base_url: https://bandcamp.com
+    currency: USD
+    country: US
+    note: often the only source for small US indie pressings

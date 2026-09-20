@@ -1,0 +1,29 @@
+[project]
+name = "groove-search"
+version = "0.1.0"
+description = "Album search engine: finds the best CD/vinyl offers across online record shops."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "selectolax>=0.3",
+    "rapidfuzz>=3.9",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.44"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+groove = "groove_search.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
