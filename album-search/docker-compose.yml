@@ -1,0 +1,35 @@
+# The open web's best engine, made durable.
+#
+#     docker compose up -d
+#     export GROOVE_SEARXNG_URL=http://127.0.0.1:8888
+#
+# SearXNG is the only keyless provider that does not throttle us, because the
+# instance is yours. It is optional - without GROOVE_SEARXNG_URL the app falls
+# back to DuckDuckGo alone - but it is the difference between two engines and
+# a dozen, and DuckDuckGo's throttle arrives after about ten searches.
+#
+# The engine list lives in ./searxng/settings.yml, mounted rather than edited
+# inside the container: an earlier instance was configured by hand in the
+# container's own filesystem and would have lost its JSON format the first
+# time it was recreated.
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: groove-searxng
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      # The image substitutes this into settings.yml's placeholder on start.
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-groove-search-local-instance}
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    restart: unless-stopped
+    # One local user's searches. The defaults assume a public instance.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID

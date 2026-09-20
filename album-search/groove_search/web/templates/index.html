@@ -37,21 +37,33 @@
 {% endif %}
 
 {% if registry.is_configured %}
-  <section class="card">
-    <h2>What are you looking for?</h2>
-    <form hx-post="/search" hx-target="#results" hx-indicator="#spinner">
-      <textarea name="albums" rows="5" spellcheck="false"
-                placeholder="One album per line, e.g.&#10;Pet Fox - A face in your life">{{ example }}</textarea>
-      <div class="row">
-        <button type="submit" class="primary">Find best prices</button>
-        <span id="spinner" class="htmx-indicator">searching every shop…</span>
-      </div>
+  {% set albums_text = example %}
+  {% include "partials/search_form.html" %}
+
+  {% if library_sources %}
+    <section class="card">
+      <h2>Import from your library</h2>
       <p class="hint">
-        <code>Artist - Title</code> works best. A bare artist name finds anything they released.
-        Add <code>(vinyl)</code> or <code>(CD)</code> to demand a format.
+        The albums you most recently added on
+        {{ library_sources|map('service')|join(' or ') }},
+        so a want-list you already built does not have to be retyped.
       </p>
-    </form>
-  </section>
+      <div class="row">
+        <label for="library-limit">Last</label>
+        <input type="number" id="library-limit" name="limit" value="{{ library_limit }}"
+               min="1" max="{{ library_max }}" class="library-limit"/>
+        <span class="hint">added on</span>
+        {% for source in library_sources %}
+          <button hx-get="/library/{{ source }}" hx-target="#library-list" hx-swap="outerHTML"
+                  hx-include="#library-limit" hx-indicator="#library-spinner">
+            {{ source|service }}
+          </button>
+        {% endfor %}
+        <span id="library-spinner" class="htmx-indicator">reading your library…</span>
+      </div>
+      <div id="library-list"></div>
+    </section>
+  {% endif %}
 
   <section id="results"></section>
 

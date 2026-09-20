@@ -19,6 +19,12 @@
             <span class="searching-source">{{ source }}</span>
             {% if outcome %}
               <span class="hint">{{ outcome }}</span>
+              {% set engines = job.engines_of(album, source) %}
+              {% if engines %}
+                <ul class="progress-engines">
+                  {% for line in engines %}<li class="hint">{{ line }}</li>{% endfor %}
+                </ul>
+              {% endif %}
             {% elif source == web_source_name %}
               <span class="hint">asking the engines, then opening up to {{ web_max_pages }} pages…</span>
             {% endif %}

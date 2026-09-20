@@ -10,11 +10,17 @@ import os
 from pathlib import Path
 
 from .fetching import BrowserFetcher, CachingFetcher, Fetcher, HttpFetcher, RoutingFetcher
+from .library import MusicLibrary, build_library as _build_library, configured_sources, library_hint
+from .oauth import TokenStore
 from .websearch import KEY_VARS, SearchProvider, from_env
 
 VAR_DIR = Path(os.environ.get("GROOVE_VAR", "var"))
 REGISTRY_PATH = VAR_DIR / "registry.json"
 CACHE_DIR = VAR_DIR / "cache"
+# OAuth tokens for the streaming libraries. Under `var/` with everything else
+# that is local state, which is already gitignored - and each file is written
+# 0600, because unlike the cache these grant access to somebody's account.
+TOKEN_DIR = VAR_DIR / "tokens"
 
 # Setup re-reads the same pages repeatedly, so it caches for longer than a
 # search, where a stale price is worse than a slow one.
@@ -91,6 +97,43 @@ def search_provider_hint() -> str:
         "keyless DuckDuckGo always, plus your own SearXNG if GROOVE_SEARXNG_URL is "
         "set, plus Brave or Serper if one of " + ", ".join(KEY_VARS) + " is. Engines "
         "differ more in coverage than in ranking, so asking several finds records a "
-        "single one misses. GROOVE_SEARCH_PROVIDER names the engines to use instead "
-        "(e.g. 'searxng', or 'searxng,duckduckgo'); 'none' switches the open web off."
+        "single one misses, and every result names the engines it asked. The widest "
+        "set is a SearXNG of your own - 'docker compose up -d' in this repo starts "
+        "one holding a dozen engines behind a single keyless endpoint. "
+        "GROOVE_SEARCH_PROVIDER names the engines to use instead (e.g. 'searxng', or "
+        "'searxng,duckduckgo'); 'none' switches the open web off."
     )
+
+
+def token_store() -> TokenStore:
+    """Where this machine keeps its streaming-service tokens."""
+    return TokenStore(directory=TOKEN_DIR)
+
+
+def build_library(source: str, registry=None) -> MusicLibrary | None:
+    """A streaming library by name, or None when it is not configured here.
+
+    None is the same normal state it is for the open web: no client id has
+    been set, so the UI offers the setting instead of reporting a failure.
+    """
+    country = (getattr(registry, "location", None) or "PL").upper()
+    return _build_library(source, token_store(), country=country)
+
+
+__all__ = [  # noqa: F822 - re-exported so callers need one wiring module
+    "REGISTRY_PATH",
+    "CACHE_DIR",
+    "TOKEN_DIR",
+    "SETUP_TTL",
+    "SEARCH_TTL",
+    "build_fetcher",
+    "build_browser_fetcher",
+    "browser_hosts_for",
+    "browser_available",
+    "build_search_provider",
+    "search_provider_hint",
+    "build_library",
+    "configured_sources",
+    "library_hint",
+    "token_store",
+]

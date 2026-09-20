@@ -12,7 +12,8 @@
 
       {% if not result.available %}
         <p class="not-available">
-          Not available — checked {{ result.shops_searched }} shop{{ '' if result.shops_searched == 1 else 's' }}{% if result.web_report %} and the open web{% endif %}.
+          {% if result.leads %}No readable price — checked {{ result.shops_searched }} shop{{ '' if result.shops_searched == 1 else 's' }}{% if result.web_report %} and the open web{% endif %}, and the sellers that have it would not show one.
+          {% else %}Not available — checked {{ result.shops_searched }} shop{{ '' if result.shops_searched == 1 else 's' }}{% if result.web_report %} and the open web{% endif %}.{% endif %}
         </p>
         {% if result.shops_failed %}
           <p class="hint">Could not reach: {% for f in result.shops_failed %}{{ f.shop_name }}{% if f.error %} ({{ f.error }}){% endif %}{{ ", " if not loop.last }}{% endfor %}</p>
@@ -39,6 +40,7 @@
             <p class="meta">
               <span class="shop">{{ best.shop_name }}</span>
               <span class="badge source {{ 'web' if best.from_open_web else 'known' }}">{{ best.source_label }}</span>
+              {% if best.engine_label %}<span class="badge engine">via {{ best.engine_label }}</span>{% endif %}
               {% if best.country and best.country != registry.location %}<span class="badge from">from {{ best.country }}</span>{% endif %}
               {% if best.format.value != 'any' %}<span class="badge fmt">{{ best.format.value }}</span>{% endif %}
               <span class="badge stock {{ best.availability.value }}">{{ best.availability.value.replace('_', ' ') }}</span>
@@ -74,6 +76,7 @@
                 <td class="alt-shop">
                   {{ alt.shop_name }}
                   <span class="badge source {{ 'web' if alt.from_open_web else 'known' }}">{{ alt.source_label }}</span>
+                  {% if alt.engine_label %}<span class="badge engine">via {{ alt.engine_label }}</span>{% endif %}
                   {% if alt.country and alt.country != registry.location %}<span class="badge from">{{ alt.country }}</span>{% endif %}
                 </td>
                 <td class="alt-title">
@@ -87,6 +90,26 @@
         {% else %}
           <p class="hint">Only one shop had it — no price comparison possible.</p>
         {% endif %}
+      {% endif %}
+
+      {% if result.leads %}
+        <div class="leads">
+          <p class="hint">
+            Also selling this, but the price could not be read
+            ({{ 'this seller blocks' if result.leads|length == 1 else 'these sellers block' }} automated readers,
+            so it is not costed or ranked):
+          </p>
+          <ul class="lead-list">
+            {% for lead in result.leads %}
+              <li>
+                <a href="{{ lead.url }}" target="_blank" rel="noopener noreferrer">{{ lead.host }}</a>
+                <span class="lead-title">{{ lead.title }}</span>
+                {% if lead.format.value != 'any' %}<span class="badge fmt">{{ lead.format.value }}</span>{% endif %}
+                <span class="badge blocked">{{ lead.reason }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
       {% endif %}
 
       {% if result.reports %}
@@ -116,6 +139,16 @@
                     {%- else %}no match{% endif -%}
                   </td>
                 </tr>
+                {% for engine in web.engines %}
+                  <tr class="{{ 'bad' if not engine.ok else ('hit' if engine.hits else 'miss') }} engine-row">
+                    <td class="trace-source">↳ {{ engine.name }}</td>
+                    <td class="trace-kind"><span class="badge engine">engine</span></td>
+                    <td class="trace-what">
+                      {%- if engine.note %}{{ engine.note }}
+                      {%- else %}{{ engine.hits }} result{{ '' if engine.hits == 1 else 's' }}{% endif -%}
+                    </td>
+                  </tr>
+                {% endfor %}
               {% elif not web_enabled %}
                 <tr class="miss">
                   <td class="trace-source">open web</td>

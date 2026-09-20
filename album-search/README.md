@@ -72,6 +72,8 @@ groove search "Pet Fox - A face in your life" "Abase - Awakening"
 groove search --file albums.txt
 groove search --no-web "..."      # calibrated shops only, skip the open web
 groove search --shop-price "..."  # rank on the listed price, not delivered cost
+groove library spotify            # the last 25 albums you saved (signs you in the first time)
+groove library spotify --pick 1,3,5-8   # ...and price exactly those
 groove doctor                     # per-shop health
 groove recalibrate                # re-learn every broken shop worth re-learning
 groove recalibrate voiceshop      # re-learn one
@@ -91,6 +93,53 @@ list, and re-learn a shop with one button when its recipe breaks.
 | `Whitest Boy Alive` | artist only — matches anything they released |
 | `Abase - Awakening (vinyl)` | vinyl only; `(CD)` likewise |
 | `-> Björk - Homogénic` | list markers and diacritics are handled |
+
+## Albums you already saved
+
+The want-list usually exists before the search does: records get saved to Spotify or
+TIDAL as they are discovered, and retyping them here is the only reason they were not
+being priced. So groove-search can read **the last X albums you added** to either
+account and let you tick the ones to price.
+
+```bash
+groove library spotify                  # numbered list of the last 25 you saved
+groove library spotify --limit 50
+groove library spotify --pick 1,3,5-8   # price exactly those, "all" for everything
+groove library spotify --logout         # forget the token
+```
+
+The web UI does the same with checkboxes, and ticking only **fills the search box** —
+you still read the lines, add a `(vinyl)`, and press the button. A list from a streaming
+account is a suggestion, not an instruction.
+
+Nothing downstream learns that streaming exists: a saved album becomes an `Artist - Title`
+line and goes through the same `normalize` → shops → open web → ranking path as anything
+typed by hand. Titles keep their edition noise ("In Rainbows (Deluxe Edition)") on
+purpose — `text.significant()` strips it from *both* sides of a comparison later, and a
+title cleaned only on this side would fold differently from the shop's.
+
+### Connecting an account
+
+One app registration each, and no client secret — the login is Authorization Code with
+PKCE, which is the flow for public clients:
+
+| | |
+| --- | --- |
+| **Spotify** | Create an app at [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), add the redirect URI below, then `export SPOTIFY_CLIENT_ID=...` |
+| **TIDAL** | Create an app at [developer.tidal.com](https://developer.tidal.com), same redirect URI, then `export TIDAL_CLIENT_ID=...` |
+
+```
+http://127.0.0.1:8899/callback
+```
+
+That address has to be exact. It must be the **`127.0.0.1` literal, not `localhost`** —
+Spotify refuses to register the latter — and the port is shared by the CLI and the web UI
+on purpose, so there is one redirect URI to register rather than one per surface. Change
+it with `GROOVE_OAUTH_PORT` if something else on your machine wants 8899.
+
+Only the read scopes are asked for (`user-library-read`; `user.read collection.read` on
+TIDAL), and the token stays on this machine in `var/tokens/`, written `0600`. Signing out
+is `groove library <service> --logout`, or the button in the web UI.
 
 ## Two sources, one seam
 
@@ -122,25 +171,49 @@ through another, and adding an engine must not cost you what the previous one co
 Merging costs no extra page fetches — the same small budget of candidate pages is opened,
 just chosen from a wider pool — and one engine failing never takes down another. DuckDuckGo
 needs nothing but will rate-limit a heavy session; when it does, it says so rather than
-pretending the record is unavailable. To run SearXNG yourself:
+pretending the record is unavailable.
+
+**SearXNG is where extra engines actually come from.** It is a metasearch front end, so one
+keyless endpoint carries a dozen engines — Bing, Yahoo, Yandex, Seznam, Yep, Qwant, Google
+and more — and it deals with each one's quirks itself. Scraping those engines directly does
+not work: Bing serves a degraded page to anything without cookies, Mojeek and Startpage
+answer with a captcha, Ecosia and Yep firewall the request. The repo ships one:
 
 ```bash
-docker run -d -p 8888:8080 \
-  -e SEARXNG_SETTINGS__SEARCH__FORMATS='["html","json"]' searxng/searxng
+docker compose up -d                           # engines listed in searxng/settings.yml
 export GROOVE_SEARXNG_URL=http://127.0.0.1:8888
 ```
 
-Public SearXNG instances are not a substitute — nearly all disable the JSON format.
+The engine list is a mounted file, so it survives recreating the container, and adding an
+engine is a line in it rather than a new class here. Public SearXNG instances are not a
+substitute — nearly all disable the JSON format.
 `GROOVE_SEARCH_PROVIDER` pins which engines are used instead of all of them — one name, or
 several (`searxng,duckduckgo`); `none` switches the open web off entirely. Pinning a single
 engine is the quickest way to tell that engine's blind spot from a record nobody sells.
 
-Every offer says which source found it — a calibrated shop or the open web — and each
-result carries a "How this was searched" breakdown of what every source did, because a shop
-missing a record it should stock and the open web missing one are different faults.
+Every offer says which source found it — a calibrated shop or the open web — **and which
+engine**, because a shop missing a record it should stock, the open web missing one, and
+one engine's blind spot are three different faults. "How this was searched" breaks the open
+web down per engine, so a thin result shows whether engines answered or refused:
 
-Adding an engine is a class implementing `search()` in `websearch.py`, not a refactor.
-The test suite stays fully offline via `FakeSearch`.
+```
+web search           3 offers from shops nobody seeded
+  ↳ searxng/google cse   12 results
+  ↳ searxng/qwant         4 results
+  ↳ searxng/brave         Suspended: too many requests
+  ↳ searxng/duckduckgo    CAPTCHA
+```
+
+**Sellers that block us are named, not dropped.** Allegro answers 403 to plain HTTP and to
+a headless browser alike, and its API grants offer search only to partner accounts; Discogs
+and Boomkat sit behind Cloudflare. When the engine's own title shows one of them is selling
+the record, it is listed under the offers as a link with no price — never costed, never
+ranked, never "best". Reporting "not available" for a record the country's biggest
+marketplace is selling would be the worse lie.
+
+Adding an engine is a line in `searxng/settings.yml` if SearXNG carries it, and otherwise a
+class implementing `search()` in `websearch.py` — not a refactor either way. The test suite
+stays fully offline via `FakeSearch`.
 
 ## Delivered cost, not listed price
 
@@ -206,6 +279,12 @@ non-browser clients; those simply drop out of the registry.
 | `calibration.py` | Learns a shop's search endpoint and result structure |
 | `discovery.py` | Ranks candidate shops by measured supply; browser retry |
 | `registry.py` | Shops + recipes + health, persisted as one JSON file |
+| `product.py` | Reads one product page five ways, most trustworthy first |
+| `websearch.py` | Search engines behind one protocol, merged and reported per engine |
+| `oauth.py` | Authorization Code with PKCE, the loopback callback, and the token store |
+| `library.py` | Spotify and TIDAL saved albums behind one protocol, as searchable lines |
+| `openweb.py` | Engine → candidate pages → the same strict matcher → offers and leads |
+| `shipping.py` | Postage, import VAT and the delivered cost everything is ranked on |
 | `search.py` | Fan-out, per-shop term retries, best-price assembly |
 | `web/`, `cli.py` | Thin adapters over the above |
 
@@ -219,7 +298,15 @@ Run the tests with `.venv/bin/python -m pytest`.
 - **Currency conversion uses a static table** in `registry.json` (`rates`), used only to
   rank offers across currencies. Displayed prices are always the shop's own. Edit the
   table if the rates drift.
-- **Shipping is not included** in the comparison — only the item price.
+- **Shipping and import VAT are estimates**, not quotes: per-zone round numbers in
+  `registry.json`. Good enough to order offers correctly, which is their job. An unknown
+  origin is costed as the worst case on purpose — guessing cheap would hand an
+  unidentified foreign shop a domestic estimate.
+- **Some sellers cannot be priced at all.** Allegro refuses plain HTTP *and* a headless
+  browser, and its API grants offer search only to partner accounts (a personal app gets
+  `403 AccessDenied`); Discogs and Boomkat answer with Cloudflare. They appear as
+  un-priced leads rather than offers. For Polish marketplace prices, `ceneo.pl` publishes
+  JSON-LD and is read normally through the open-web path.
 - **Some shops will never calibrate**: hard bot protection (Juno and Decks over plain
   HTTP, Bonito's 429s), a robots-disallowed search path (Rush Hour), or a JS-only endpoint
   with no HTML fallback (DVDMax).

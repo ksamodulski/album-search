@@ -16,11 +16,13 @@ import asyncio
 import os
 import time
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 import httpx
 from selectolax.parser import HTMLParser
+
+from .domain import EngineReport
 
 # Engines return plenty of chaff - reviews, streaming links, lyrics sites.
 # Asking for more than this just buys more pages to fetch and discard.
@@ -43,6 +45,11 @@ class SearchHit:
     title: str
     url: str
     snippet: str = ""
+    # Which engine offered this page. Carried all the way to the finished
+    # offer: when a shop nobody has heard of turns out to have the record,
+    # the next question is always "which engine saw it, and do I have that
+    # one configured?".
+    engine: str = ""
 
     @property
     def host(self) -> str:
@@ -60,11 +67,30 @@ class SearchProvider(Protocol):
     leave a reason in `last_error` when it comes back empty for a reason the
     user needs to know, so "the engine refused us" is never displayed as
     "this record is not for sale".
+
+    `reports()` is the same information one engine at a time, and it is what
+    lets a result say which engines were really asked. It is optional: a
+    provider that does not implement it is described from `last_error` by
+    `reports_of` below.
     """
 
     last_error: str | None
 
     async def search(self, phrase: str, *, limit: int = DEFAULT_LIMIT) -> list[SearchHit]: ...
+
+
+def reports_of(provider: object, fallback_name: str = "web search") -> tuple[EngineReport, ...]:
+    """What each engine behind `provider` did, however plain the provider is.
+
+    Every adapter here implements `reports()`, but the protocol only requires
+    `search`, so a caller must still be able to describe a provider a test or
+    a future engine supplies.
+    """
+    own = getattr(provider, "reports", None)
+    if callable(own):
+        return tuple(own())
+    name = getattr(provider, "name", None) or fallback_name
+    return (EngineReport(name=name, note=getattr(provider, "last_error", None)),)
 
 
 def usable(hits: list[SearchHit]) -> list[SearchHit]:
@@ -85,14 +111,20 @@ def usable(hits: list[SearchHit]) -> list[SearchHit]:
 class BraveSearch:
     """Brave's Search API. Free tier is ample for one person's want-list."""
 
+    name: str = "brave"
     api_key: str = ""
     endpoint: str = "https://api.search.brave.com/res/v1/web/search"
     country: str = "pl"
     timeout: float = 15.0
     last_error: str | None = None
+    _hits: int = field(default=0, repr=False)
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
 
+    def reports(self) -> tuple[EngineReport, ...]:
+        return (EngineReport(self.name, self._hits, self.last_error),)
+
     async def search(self, phrase: str, *, limit: int = DEFAULT_LIMIT) -> list[SearchHit]:
+        self._hits = 0
         if not self.api_key:
             self.last_error = "no API key configured"
             return []
@@ -109,11 +141,20 @@ class BraveSearch:
             self.last_error = f"search engine unreachable ({type(exc).__name__})"
             return []
         results = (payload.get("web") or {}).get("results") or []
-        return [
-            SearchHit(title=r.get("title", ""), url=r.get("url", ""), snippet=r.get("description", ""))
+        hits = [
+            SearchHit(
+                title=r.get("title", ""),
+                url=r.get("url", ""),
+                snippet=r.get("description", ""),
+                engine=self.name,
+            )
             for r in results
             if r.get("url")
         ]
+        self._hits = len(hits)
+        if hits:
+            self.last_error = None
+        return hits
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -130,14 +171,20 @@ class BraveSearch:
 class SerperSearch:
     """Serper.dev, a Google proxy - the other key people tend to already have."""
 
+    name: str = "serper"
     api_key: str = ""
     endpoint: str = "https://google.serper.dev/search"
     country: str = "pl"
     timeout: float = 15.0
     last_error: str | None = None
+    _hits: int = field(default=0, repr=False)
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
 
+    def reports(self) -> tuple[EngineReport, ...]:
+        return (EngineReport(self.name, self._hits, self.last_error),)
+
     async def search(self, phrase: str, *, limit: int = DEFAULT_LIMIT) -> list[SearchHit]:
+        self._hits = 0
         if not self.api_key:
             self.last_error = "no API key configured"
             return []
@@ -153,11 +200,20 @@ class SerperSearch:
         except (httpx.HTTPError, ValueError) as exc:
             self.last_error = f"search engine unreachable ({type(exc).__name__})"
             return []
-        return [
-            SearchHit(title=r.get("title", ""), url=r.get("link", ""), snippet=r.get("snippet", ""))
+        hits = [
+            SearchHit(
+                title=r.get("title", ""),
+                url=r.get("link", ""),
+                snippet=r.get("snippet", ""),
+                engine=self.name,
+            )
             for r in payload.get("organic") or []
             if r.get("link")
         ]
+        self._hits = len(hits)
+        if hits:
+            self.last_error = None
+        return hits
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -174,14 +230,24 @@ class SerperSearch:
 class FakeSearch:
     """Test adapter: canned hits per phrase, and a record of what was asked."""
 
+    name: str = "fake"
     hits: dict[str, list[SearchHit]] = field(default_factory=dict)
     default: list[SearchHit] = field(default_factory=list)
     asked: list[str] = field(default_factory=list)
     last_error: str | None = None
+    _hits: int = field(default=0, repr=False)
+
+    def reports(self) -> tuple[EngineReport, ...]:
+        return (EngineReport(self.name, self._hits, self.last_error),)
 
     async def search(self, phrase: str, *, limit: int = DEFAULT_LIMIT) -> list[SearchHit]:
         self.asked.append(phrase)
-        return list(self.hits.get(phrase, self.default))[:limit]
+        found = [
+            hit if hit.engine else replace(hit, engine=self.name)
+            for hit in list(self.hits.get(phrase, self.default))[:limit]
+        ]
+        self._hits = len(found)
+        return found
 
 
 @dataclass
@@ -199,6 +265,7 @@ class DuckDuckGoSearch:
     that gets you running, and a key as the upgrade.
     """
 
+    name: str = "duckduckgo"
     endpoint: str = "https://html.duckduckgo.com/html/"
     country: str = "pl"
     timeout: float = 20.0
@@ -211,12 +278,17 @@ class DuckDuckGoSearch:
     # Once throttled, back right off - hammering only extends the block.
     throttled_delay: float = 15.0
     last_error: str | None = None
+    _hits: int = field(default=0, repr=False)
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
     _last_call: float = field(default=0.0, repr=False)
     _throttled: bool = field(default=False, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
+    def reports(self) -> tuple[EngineReport, ...]:
+        return (EngineReport(self.name, self._hits, self.last_error),)
+
     async def search(self, phrase: str, *, limit: int = DEFAULT_LIMIT) -> list[SearchHit]:
+        self._hits = 0
         async with self._lock:
             await self._wait_turn()
             try:
@@ -235,7 +307,8 @@ class DuckDuckGoSearch:
                     "or set a search API key for something sturdier"
                 )
                 return []
-        hits = _parse_ddg(html)[:limit]
+        hits = [replace(hit, engine=self.name) for hit in _parse_ddg(html)[:limit]]
+        self._hits = len(hits)
         if hits:
             self.last_error = None
             self._throttled = False
@@ -330,12 +403,25 @@ class SearxngSearch:
     403 or 429 to anything automated.
     """
 
+    name: str = "searxng"
     base_url: str = "http://127.0.0.1:8888"
     country: str = "pl"
     timeout: float = 20.0
     engines: str = ""
     last_error: str | None = None
+    _reports: tuple[EngineReport, ...] = field(default=(), repr=False)
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
+
+    def reports(self) -> tuple[EngineReport, ...]:
+        """One entry per *upstream* engine, not one for SearXNG.
+
+        SearXNG is a front-end onto a dozen engines, and which of them
+        answered is the whole question: "SearXNG found nothing" hides that
+        Google served a captcha while Bing and Qwant answered normally. Its
+        JSON says both, so it would be a shame to flatten it back into one
+        line here.
+        """
+        return self._reports or (EngineReport(self.name, 0, self.last_error),)
 
     async def search(self, phrase: str, *, limit: int = DEFAULT_LIMIT) -> list[SearchHit]:
         params = {"q": phrase, "format": "json", "language": self.country}
@@ -350,13 +436,67 @@ class SearxngSearch:
                 f"SearXNG at {self.base_url} did not answer ({type(exc).__name__}) - "
                 "is it running, and is the JSON format enabled?"
             )
+            self._reports = (EngineReport(self.name, 0, self.last_error),)
             return []
-        self.last_error = None
-        return [
-            SearchHit(title=r.get("title", ""), url=r.get("url", ""), snippet=r.get("content", ""))
+        hits = [
+            SearchHit(
+                title=r.get("title", ""),
+                url=r.get("url", ""),
+                snippet=r.get("content", ""),
+                engine=self._label(r),
+            )
             for r in payload.get("results") or []
             if r.get("url")
         ][:limit]
+        self._reports = _searxng_reports(self.name, hits, payload.get("unresponsive_engines") or [])
+        self.last_error = None if hits else self._refusal()
+        return hits
+
+    def _label(self, result: dict) -> str:
+        upstream = result.get("engine") or (result.get("engines") or [""])[0]
+        return f"{self.name}/{upstream}" if upstream else self.name
+
+    def _refusal(self) -> str | None:
+        """Why an empty SearXNG answer was empty, if its engines said so."""
+        refused = [r.summary for r in self._reports if not r.ok]
+        if not refused:
+            return None
+        return f"SearXNG's engines gave nothing back ({'; '.join(refused)})"
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=True)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+
+def _searxng_reports(
+    prefix: str, hits: list[SearchHit], unresponsive: list
+) -> tuple[EngineReport, ...]:
+    """Per-upstream-engine tallies, contributors first, then the refusals.
+
+    `unresponsive_engines` is SearXNG's own list of engines that answered with
+    a captcha, a timeout or a suspension - the facts that otherwise reach the
+    user as an unexplained thin result.
+    """
+    counted: dict[str, int] = {}
+    for hit in hits:
+        counted[hit.engine or prefix] = counted.get(hit.engine or prefix, 0) + 1
+    reports = [
+        EngineReport(name, count)
+        for name, count in sorted(counted.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    for entry in unresponsive:
+        # Entries are [engine, reason] pairs, occasionally longer.
+        parts = list(entry) if isinstance(entry, (list, tuple)) else [str(entry)]
+        name = str(parts[0]) if parts else "?"
+        reason = str(parts[1]) if len(parts) > 1 else "did not answer"
+        reports.append(EngineReport(f"{prefix}/{name}", 0, reason))
+    return tuple(reports)
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -394,12 +534,32 @@ class MergedSearch:
     # Comfortably above a healthy engine's politeness delay, below that sleep.
     patience: float = 10.0
     last_error: str | None = None
+    _timed_out: frozenset[int] = field(default=frozenset(), repr=False)
+
+    def reports(self) -> tuple[EngineReport, ...]:
+        """Every engine's own account of the last search, in one list.
+
+        This is what makes a merged search readable: without it the user sees
+        a single thin result and cannot tell a record nobody sells from three
+        engines that all happened to be refusing us.
+        """
+        collected: list[EngineReport] = []
+        for index, provider in enumerate(self.providers):
+            if index in self._timed_out:
+                name = getattr(provider, "name", None) or type(provider).__name__
+                collected.append(
+                    EngineReport(name, 0, f"took longer than {self.patience:.0f}s, abandoned")
+                )
+                continue
+            collected.extend(reports_of(provider))
+        return tuple(collected)
 
     async def search(self, phrase: str, *, limit: int = DEFAULT_LIMIT) -> list[SearchHit]:
         if not self.providers:
             return []
+        self._timed_out = frozenset()
         harvests = await asyncio.gather(
-            *(self._ask(p, phrase, limit) for p in self.providers),
+            *(self._ask(p, phrase, limit, index) for index, p in enumerate(self.providers)),
             # One engine's bug must not take down the engines that worked;
             # the whole point of merging is that no single engine decides.
             return_exceptions=True,
@@ -411,19 +571,23 @@ class MergedSearch:
         self.last_error = None if merged else self._why_nothing()
         return merged
 
-    async def _ask(self, provider: SearchProvider, phrase: str, limit: int) -> list[SearchHit]:
+    async def _ask(
+        self, provider: SearchProvider, phrase: str, limit: int, index: int
+    ) -> list[SearchHit]:
         try:
             return await asyncio.wait_for(provider.search(phrase, limit=limit), self.patience)
         except TimeoutError:
+            # Remembered rather than swallowed: an abandoned engine is a
+            # different fact from an engine that answered "nothing".
+            self._timed_out |= {index}
             return []
 
     def _why_nothing(self) -> str | None:
         """Why the merged result was empty, in every engine's own words."""
         reasons: list[str] = []
-        for provider in self.providers:
-            reason = getattr(provider, "last_error", None)
-            if reason and reason not in reasons:
-                reasons.append(reason)
+        for report in self.reports():
+            if report.note and report.note not in reasons:
+                reasons.append(report.note)
         return "; ".join(reasons) if reasons else None
 
     async def aclose(self) -> None:

@@ -1,16 +1,28 @@
 # groove-search — session handoff
 
-Status as of 2026-09-20 (third session). Read `README.md` first for what the app is and how the pieces fit;
+Status as of 2026-09-20 (fifth session, the same day as the fourth). Read `README.md` first for what the app is and how the pieces fit;
 this file is only what a next session needs that the code does not already say.
 
 ## Where things stand
 
-Working end to end: `groove setup` → `groove search` → `groove serve`, plus `doctor` and
-`recalibrate`. 185 tests pass (`.venv/bin/python -m pytest`), all offline — the fake fetcher
-and `FakeSearch` model a real query-sensitive shop and a real engine, so nothing in the
-suite touches the network.
+Working end to end: `groove setup` → `groove search` → `groove serve`, plus `doctor`,
+`recalibrate` and now `library`. 267 tests pass (`.venv/bin/python -m pytest`), all offline —
+the fake fetcher, `FakeSearch` and `FakeLibrary` model a real query-sensitive shop, a real
+engine and a real streaming account, so nothing in the suite touches the network.
 
-**The headline change this session: three bugs in the matcher were making real records
+**The headline change this session: the want-list no longer has to be typed.**
+`groove library spotify` lists the last X albums added to a streaming account and
+`--pick 1,3,5-8` prices exactly those; the web UI does the same with checkboxes that fill
+the search box. Two adapters (`library.py`) behind one protocol, one PKCE login shared by
+both surfaces (`oauth.py`). **Spotify's path is the one to trust; TIDAL's endpoints are
+written from documentation that could not be read end to end — see finding 23.**
+
+**Last session: the open web now says which engine answered, blocked sellers are named
+instead of dropped, and the engine roster moved into a mounted SearXNG config.** The concrete win is measurable — `Simon & Garfunkel - Bookends` now wins at
+99.68 PLN from muziker.pl, found via *Yep*, an engine the app could not reach that
+morning. Details under *Hard-won findings* 17–20.
+
+**The session before that: three bugs in the matcher were making real records
 invisible, and two of them had nothing to do with coverage.** `Simon & Garfunkel -
 Bookends` returned nothing while four shops — three of them in the registry — had it in
 stock. Details under *Hard-won findings* 13–15; all three are the same lesson, which is
@@ -39,6 +51,22 @@ only DuckDuckGo could see.
 | Brave | free tier | 2k/month | `BRAVE_API_KEY` / `GROOVE_SEARCH_KEY` is set |
 | **DuckDuckGo** | none | throttles fast | always — it needs no account |
 
+**Four adapters, but a dozen engines** — because SearXNG is itself a front end onto
+many. `docker-compose.yml` and `searxng/settings.yml` now live in the repo (item 1 of
+the old next-steps list, done), and the mounted settings enable Bing, Yahoo, Yandex,
+Seznam, Yep, Qwant, Mojeek, Startpage, Google, DuckDuckGo and Brave. Measured on one
+query the day it was written: 85 results from 7 engines, against 20 from one before.
+Adding an engine is now a line in a YAML file, not a class.
+
+**Every engine states its own case.** `EngineReport` (in `domain.py`) carries a name, a
+hit count and a note; `SearchProvider.reports()` returns one per engine, SearXNG returns
+one per *upstream* engine including its `unresponsive_engines`, and `MergedSearch`
+concatenates them. It reaches the user three ways: `engines:` under each album in the
+CLI, indented rows under "web search" in the web trace, and a `via <engine>` badge on
+every open-web offer. This was worth doing because a merged search shows a union, and a
+union hides the difference between "nobody sells this" and "Google captcha'd, Brave
+suspended us and DuckDuckGo was throttled".
+
 `GROOVE_SEARCH_PROVIDER` still pins the set by name and now accepts a list
 (`searxng`, or `searxng,duckduckgo`); `none` switches the open web off. Pinning one engine
 is how you tell that engine's blind spot from a record nobody sells.
@@ -62,11 +90,11 @@ Live registry lives in `var/registry.json` (gitignored), built from
 registry without that key loads on defaults. Page cache in `var/cache/` — delete it to
 force fresh fetches.
 
-**A SearXNG container is running on this machine** as `groove-searxng` (port 8888), left up
-deliberately so the next session can use it. Two things to know: its JSON format was enabled
-by appending to `/etc/searxng/settings.yml` *inside the container*, so recreating the
-container loses it (mount a settings file to make it durable), and nothing depends on the
-container — without `GROOVE_SEARXNG_URL` the app simply searches through DuckDuckGo alone.
+**The SearXNG container is now `docker compose up -d`**, bound to 127.0.0.1:8888, with its
+engine list in `searxng/settings.yml` mounted from the repo. The old hand-configured
+container has been removed. Nothing depends on it — without `GROOVE_SEARXNG_URL` the app
+searches through DuckDuckGo alone — but with it, the open web sees roughly four times as
+many candidates.
 
 ## Decisions worth not re-litigating
 
@@ -105,6 +133,21 @@ container — without `GROOVE_SEARXNG_URL` the app simply searches through DuckD
   this was searched" panel in the web UI). A calibrated shop missing a record it should
   stock is a broken recipe; the open web missing one is engine coverage. They are different
   faults with different fixes, and a result that does not say which cannot be diagnosed.
+
+- **A streaming library is an input, not a third source.** It produces `Artist - Title`
+  lines that go through `normalize_lines` and the unchanged `search_albums`, so nothing
+  downstream knows streaming exists and no ranking, matching or reporting code had to
+  change. Resisting the pull to make it a source is what kept this feature small.
+- **Ticking albums fills the search box; it never starts a search.** The user still reads
+  the lines, edits them and presses the button. An import that searched on its own would
+  spend a DuckDuckGo throttle budget and minutes of live fetches on albums nobody chose.
+- **The titles keep their edition noise on purpose.** Spotify hands back "In Rainbows
+  (Deluxe Edition)"; cleaning it here would fold differently from the shop's side, which
+  is finding 15 all over again. `text.significant()` already strips it from both sides.
+- **One redirect URI, not one per surface.** The consent page redirects to a one-shot
+  loopback listener rather than into the web app, so the CLI and `groove serve` share a
+  single registered URI. The cost is a page that has to poll until the listener catches
+  the code; the benefit is one line to register per service instead of two.
 
 ## Hard-won findings (do not rediscover these)
 
@@ -182,27 +225,101 @@ container — without `GROOVE_SEARXNG_URL` the app simply searches through DuckD
    which `_is_listing` had to be taught to reject (neither the path nor a `q` parameter gave
    them away). Same class as Discogs: robots says yes, bot protection says no.
 
+17. **Allegro is closed, and now we know at which door.** Not scrapeable (403 to HTTP and
+   to headless Chromium, finding 16) *and* not reachable by API: a personal app
+   registered at apps.developer.allegro.pl gets a valid `client_credentials` token -
+   `GET /sale/categories` answers 200 - but **both** offer-search resources answer 403
+   `AccessDenied`: `/offers/listing` and `/sale/products`. The token, the required
+   `User-Agent` (Allegro issues one per app, e.g. `groove-search/1.0 (+example.com)`) and
+   the `Accept: application/vnd.allegro.public.v1+json` header were all correct - the
+   categories call proves it. Offer search is a partner/affiliate grant, so do not spend
+   another session building an Allegro adapter; the only remaining route is the affiliate
+   programme. **Do not delete this finding: registering the app takes ten minutes and
+   looks like it should work right up to the 403.**
+18. **Ceneo is the way to Polish marketplace prices.** `ceneo.pl` product pages
+   (`/<id>`) publish JSON-LD, are allowed by robots (only its *search* paths are
+   disallowed), read cleanly through the existing open-web path, and match at full
+   confidence with the right carrier - `Daft Punk - Discovery (CD)` at 42.40 PLN,
+   `Radiohead - In Rainbows (Winyl)` at 112.80. It aggregates Allegro's own sellers
+   among others, so it recovers most of what Allegro's block costs. Nothing was built
+   for it: it simply stopped being crowded out once domestic hosts got the fetch budget
+   first. Note it is a comparison site - its price is the cheapest across shops, and the
+   buyer clicks through - which is why the host name is shown as-is rather than dressed
+   up as a shop.
+19. **Amazon was never blocked; it was being filtered and outranked.** Product pages
+   answer 200 to the plain HTTP fetcher and `product.extract_product` reads them via
+   visible text (`Bookends` at 68.35 PLN). Two things kept them out: `_is_listing` let
+   Amazon's `/s?rh=...` and `/clp/...` grids through (a "price" from whichever record
+   sat first) while `/dp/` was not recognised as a product path, and the eight-page
+   budget was spent before Amazon's rank. Both are fixed - `_GRID_PATH`, the `rh`,
+   `_nkw` and `field-keywords` parameters, `/dp/` and `/gp/product` in `_PRODUCT_PATH`.
+   Amazon also localises to PLN for a Polish visitor, so the currency says nothing about
+   origin; `_HOST_COUNTRY` maps `amazon.com` to US. eBay, Discogs and Bandcamp are
+   deliberately *not* in that map - their sellers are worldwide, and an invented country
+   shown as a fact is worse than an honest blank costed as worst case.
+20. **Scraping search engines directly is a dead end; SearXNG is the way in.** Tried live
+   from this machine: Mojeek captcha, Startpage "Blocked", Ecosia 403 firewall, Yep
+   Cloudflare 403, Brave HTML 429, and Bing 200 *but serving a generic degraded page that
+   ignores the query* - the sly one, since it looks like success. Marginalia answers
+   honestly but indexes non-commercial sites by design, so it is useless for shopping.
+   Every one of those engines is reachable through SearXNG, which handles their quirks
+   server-side. Expanding coverage belongs in `searxng/settings.yml`, not in new adapter
+   classes.
+21. **The fetch budget should go domestic first.** Postage and 23% import VAT add ~100 PLN
+   to a non-EU parcel, so a foreign candidate has to be far cheaper to win on delivered
+   cost. Spending eight page-fetches on foreign shops while a Polish one sits at rank
+   nine buys pages that were never going to place. `_spread` now stable-sorts hits whose
+   host resolves to the buyer's country to the front; engine order is otherwise intact.
+   This, not any new source, is what let Ceneo and muziker.pl start winning.
+
+22. **Spotify's redirect URI must be the `127.0.0.1` literal.** `localhost` is refused at
+   *registration* time, which is the good case; the bad case is registering something that
+   does not match the `redirect_uri` sent at both the authorize *and* the token call, where
+   the symptom is `invalid_grant` one step after the actual mistake. Same for the PKCE
+   challenge: base64url with the padding stripped, or the failure again surfaces at the
+   token call. The RFC 7636 vector is pinned in `tests/test_oauth.py` and was checked
+   against `openssl` rather than memory — a recalled vector was wrong in its last
+   character, which is exactly the kind of error this class of bug hides behind.
+23. **TIDAL's collection API is written from thin documentation and is UNVERIFIED.**
+   `developer.tidal.com` and `tidal-music.github.io/tidal-api-reference` are both
+   JavaScript-rendered, so neither could be read; the shape used here
+   (`GET /v2/users/me`, then `/v2/userCollections/{id}/relationships/albums?include=albums,albums.artists`,
+   `Accept: application/vnd.api+json`, scopes `user.read collection.read`, cursor in
+   `links.next`) comes from the maintainers' own GitHub discussions plus a third-party Go
+   client. Collection read access rolled out recently and reportedly covers albums,
+   artists and playlists but not tracks. **Every base URL is an env override
+   (`GROOVE_TIDAL_API`, `GROOVE_TIDAL_AUTHORIZE`, `GROOVE_TIDAL_TOKEN`) precisely so
+   correcting it is configuration, not code.** First live run should record what is
+   actually true here.
+24. **A pending login kept `groove serve` alive for its full timeout on Ctrl-C.** The
+   login was a FastAPI `BackgroundTask`, and uvicorn waits for those at shutdown, so a
+   five-minute consent window looked exactly like a hang. It is an `asyncio.Task` held on
+   the `LoginJob` now, cancelled on shutdown, on sign-out, and by a second Connect click
+   (which would otherwise fail to bind the loopback port the first one still held).
+
 ## What a next session should probably do first
 
-1. **Make SearXNG durable, or drop it.** It is the only keyless provider that does not
-   throttle, and right now it depends on a hand-edited file inside a container. A
-   `docker-compose.yml` with a mounted `settings.yml` in the repo would make it a real
-   option rather than a demo. This is now the most valuable item on the list: the merge
-   always includes DuckDuckGo, so without SearXNG every search spends DuckDuckGo's throttle
-   budget.
-2. **A real source, not another engine.** Merging engines (done this session) was the cheap
-   win and it is spent. The next step change is an adapter that produces `Offer`s directly,
-   which `openweb.py` has already proven as a seam. **Discogs** is the cheapest — a free
-   token, and the obvious source for exactly the records this struggles with. **Allegro** is
-   the highest value for a Polish buyer: the dominant domestic marketplace, huge second-hand
-   stock, and *domestic*, so its offers would land without the postage-and-VAT penalty that
-   makes every open-web winner so far expensive. Both need their APIs; neither can be
-   scraped (finding 16). Note that `search_albums` calls `_search_open_web` directly — when
-   you add the *second* API source, that is the moment to turn the two hardcoded sources
-   into a small registry of adapters, not before.
-3. **Leave VoiceShop alone** until its recipe is 30 days old (it is the only broken shop).
+1. ~~**Make SearXNG durable, or drop it.**~~ Done — `docker-compose.yml` plus
+   `searxng/settings.yml`, both in the repo, both mounted.
+2. **Run the TIDAL path against a real account, once there is one.** Finding 23 says why:
+   the endpoints are the best reading of documentation that could not be read. Spotify
+   needs no such caveat. If TIDAL turns out to be wrong, the fix is almost certainly a URL
+   in the environment rather than a change in `library.py`.
+3. **Discogs is the remaining real source, and Allegro is not.** Finding 17 closed the
+   Allegro API route for good: a personal app is refused offer search, so stop there
+   unless you join the affiliate programme. **Discogs** still has a free token, is
+   exactly the catalogue for the records this struggles with, and its pages answer
+   Cloudflare 403 to the open-web path — so an adapter producing `Offer`s directly is
+   the only way in. `openweb.py` has proven that seam. Note that `search_albums` calls
+   `_search_open_web` directly — when you add the *second* API source, that is the moment
+   to turn the hardcoded sources into a small registry of adapters, not before.
+4. **Watch what the leads panel teaches you.** Every blocked-but-matching seller is now
+   named per search (`AlbumResult.leads`). If one host keeps appearing, that is the
+   evidence for which adapter to write next — it is a measurement rather than a guess,
+   which is how Discogs earned its place on this list.
+5. **Leave VoiceShop alone** until its recipe is 30 days old (it is the only broken shop).
    If you want it back sooner, the real fix is an adaptive per-host delay, not recalibration.
-4. **Consider per-session search state.** `web/app.py` now holds a `SearchJob` global beside
+6. **Consider per-session search state.** `web/app.py` now holds a `SearchJob` global beside
    the setup one, so only one search runs at a time and a second submission is told so
    rather than silently shown the first's progress. Fine for one local user; wrong for
    anything else.
@@ -217,7 +334,15 @@ container — without `GROOVE_SEARXNG_URL` the app simply searches through DuckD
 - **Results vary by engine, more than expected.** The same album can come back found through
   DuckDuckGo and empty through SearXNG. This is what `MergedSearch` exists for, but it does
   not make the variance go away: do not treat one empty result as proof a record is
-  unavailable, and do not tune matching thresholds on a single provider's output.
+  unavailable, and do not tune matching thresholds on a single provider's output. The
+  per-engine reporting added this session makes the variance visible rather than smaller —
+  a Bookends search showed google cse 7, bing 4, yep 3, qwant 3, seznam 2, yandex 2,
+  yahoo 1, with brave suspended and duckduckgo captcha'd, all in one search.
+- **Leads are not offers and must not become them.** A `Lead` has no price, is never
+  costed, never ranked and never "best". The temptation will be to read a price out of an
+  engine snippet for Allegro — it is often right there in the text. Do not: snippets are
+  stale, frequently show "od 49 zł" for a listing rather than the record, and a wrong best
+  price is the one failure this app is built to avoid.
 - **DuckDuckGo throttles after roughly ten searches in quick succession**, and it signals
   this with HTTP *202* plus an "anomaly" notice rather than a 429 - so the status code alone
   reads as success and the result silently looks like "nothing is for sale". `_is_throttled`
@@ -237,6 +362,15 @@ container — without `GROOVE_SEARXNG_URL` the app simply searches through DuckD
 - **Discogs is still the obvious next source.** Its product pages answer the open-web path
   with a Cloudflare 403, so scraping will not reach it — but it has a real API, and the
   second-adapter seam that the open-web source proved out is exactly where it belongs.
+- **The streaming tokens live in `var/tokens/<service>.json`, mode 0600.** `var/` was
+  already gitignored for the registry and the page cache; unlike those, these grant access
+  to somebody's account. A refresh token can be *rotated* by either service, and the store
+  keeps the new one — dropping it silently signs the user out a week later, which is the
+  kind of bug that gets blamed on the service.
+- **Spotify does not document the order of `/me/albums`**, so "the last 20 I added" is
+  sorted here by `added_at` rather than trusted. TIDAL's collection carries `addedAt` in
+  the relationship's `meta`; when it is absent the API's own order is kept rather than an
+  invented one.
 - **FX rates are a static table** in `registry.json`.
 - `web/app.py` keeps the setup job *and* the search job in module-level globals — fine for
   one local user, wrong for anything multi-user. The search job is what drives live
@@ -313,6 +447,13 @@ container — without `GROOVE_SEARXNG_URL` the app simply searches through DuckD
   PID first (`ss -lntp | grep <port>`), then kill that number alone.
 - **A `serve` process does not pick up code edits** (uvicorn runs without `--reload`).
   Restart it after changing anything under `groove_search/`, or you will test stale code.
+  **Worse than stale: it 500s.** Jinja re-reads templates from disk on every request while
+  the Python module stays as it was loaded, so a template that uses a filter or a context
+  variable added in the same change explodes with `no filter named ...` in a process that
+  predates it. Hit live on 2026-09-20: a server started at 16:59 served Internal Server
+  Error on `/` for edits made at 17:20. The symptom points at the template, the cause is
+  the process. Check `ps -p <pid> -o lstart=` against the file's mtime before debugging
+  anything else.
 - VoiceShop starts returning 429 under a multi-album search and gets marked broken; the
   per-host delay (`HttpFetcher.delay`, 1s) is too aggressive for it. An adaptive per-host
   delay that widens after a 429 is the obvious next improvement — and it is now the *only*

@@ -253,3 +253,147 @@ def test_a_searxng_url_adds_that_provider(monkeypatch):
     provider = from_env()
     searxng = next(p for p in provider.providers if isinstance(p, SearxngSearch))
     assert searxng.base_url == "http://127.0.0.1:8888"
+
+
+# --- Marketplaces: the ones that answer, and the ones that refuse ----------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Live false positives, all of them: a grid of many records whose
+        # price belongs to whichever one happened to be first.
+        "https://www.amazon.com/CDs-Vinyl-Radiohead/s?rh=n%3A5174",
+        "https://www.amazon.com/whitest-boy-alive/s?k=whitest+boy",
+        "https://www.amazon.com/clp/B000YIXBV8",
+        "https://www.ebay.com/shop/in-rainbows-vinyl?_nkw=in+rainbows",
+        "https://www.ebay.pl/sch/P-yty-CD/176984/i.html?_nkw=daft+punk",
+        "https://www.ebay.co.uk/b/bn_7024916481",
+        "https://allegro.pl/listing?string=daft+punk+discovery",
+        "https://allegro.pl/kategoria/muzyka?string=radiohead",
+    ],
+)
+def test_a_marketplace_results_grid_is_not_a_product(url):
+    from groove_search.openweb import _is_listing
+
+    assert _is_listing(url), f"{url} would have been priced as if it sold one record"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.amazon.com/Bookends-Vinyl-Simon-Garfunkel/dp/B001EQP9UK",
+        "https://www.amazon.co.uk/Rainbows-VINYL-Radiohead/dp/B000YIXBV8",
+        "https://allegro.pl/produkt/discovery-2lp-daft-punk-winyl-03a65af4",
+        "https://www.ebay.com/itm/126298853123",
+        # Shopify: a product living under a collection path.
+        "https://shop.example.com/collections/rock/products/in-rainbows",
+    ],
+)
+def test_a_marketplace_product_page_survives_the_listing_filter(url):
+    from groove_search.openweb import _is_listing
+
+    assert not _is_listing(url), f"{url} is a single record and was thrown away"
+
+
+def test_amazons_country_comes_from_the_host_since_it_localises_prices():
+    """Amazon quotes a US record in PLN here, so the currency proves nothing."""
+    from groove_search.openweb import _country_of
+
+    assert _country_of("amazon.com", "PLN") == "US"
+    # A marketplace of scattered sellers gets no invented country.
+    assert _country_of("ebay.com", "PLN") is None
+
+
+def test_the_fetch_budget_goes_to_domestic_shops_first():
+    """Postage and VAT decide the ranking, so foreign pages are the long shot."""
+    from groove_search.openweb import _spread
+
+    ordered = _spread(
+        [
+            SearchHit("a", "https://us-shop.com/products/x"),
+            SearchHit("b", "https://uk-shop.co.uk/products/x"),
+            SearchHit("c", "https://sklep.pl/products/x"),
+            SearchHit("d", "https://another.pl/products/x"),
+        ],
+        max_pages=2,
+        home="PL",
+    )
+
+    assert [h.host for h in ordered] == ["sklep.pl", "another.pl"]
+
+
+@pytest.mark.anyio
+async def test_a_blocked_seller_becomes_a_lead_not_a_silence():
+    """Allegro answers 403 to everyone; saying nothing would misreport it."""
+    engine = FakeSearch(
+        default=[SearchHit("Pet Fox - A Face In Your Life LP - Allegro", "https://allegro.pl/produkt/pet-fox")]
+    )
+    fetcher = FakeFetcher(pages={}, miss_status=403, miss_error="HTTP 403")
+
+    offers, report, findings = await find_offers(query(), engine, fetcher)
+
+    assert offers == []
+    leads = [f.lead for f in findings if f.lead]
+    assert len(leads) == 1
+    assert leads[0].host == "allegro.pl"
+    assert "403" in leads[0].reason
+
+
+@pytest.mark.anyio
+async def test_a_blocked_page_for_another_record_is_not_a_lead():
+    """The bar is the same strict matcher an offer has to clear."""
+    engine = FakeSearch(default=[SearchHit("Nirvana - Nevermind LP", "https://allegro.pl/produkt/nirvana")])
+    fetcher = FakeFetcher(pages={}, miss_status=403, miss_error="HTTP 403")
+
+    _, _, findings = await find_offers(query(), engine, fetcher)
+
+    assert [f.lead for f in findings if f.lead] == []
+
+
+@pytest.mark.anyio
+async def test_a_missing_page_is_not_a_lead():
+    """A 404 is a page that does not exist - there is nowhere to send anyone."""
+    engine = FakeSearch(
+        default=[SearchHit("Pet Fox - A Face In Your Life LP", "https://shop.example/products/pet-fox")]
+    )
+    fetcher = FakeFetcher(pages={})  # defaults to 404
+
+    _, _, findings = await find_offers(query(), engine, fetcher)
+
+    assert [f.lead for f in findings if f.lead] == []
+
+
+@pytest.mark.anyio
+async def test_the_report_names_the_engines_that_were_asked():
+    engine = FakeSearch(
+        name="alpha",
+        default=[SearchHit("Pet Fox - A Face In Your Life LP", "https://shop.example/products/pet-fox")],
+    )
+    fetcher = FakeFetcher(pages={})
+
+    _, report, _ = await find_offers(query(), engine, fetcher)
+
+    assert [r.name for r in report.engines] == ["alpha"]
+    # Two phrases are searched per album, so the tally is the sum of both.
+    assert report.engines[0].hits == 2
+
+
+@pytest.mark.anyio
+async def test_an_offer_remembers_which_engine_found_it():
+    engine = FakeSearch(
+        name="alpha",
+        default=[SearchHit("Pet Fox - A Face In Your Life LP", "https://shop.example/products/pet-fox")],
+    )
+    fetcher = FakeFetcher(
+        pages={
+            "https://shop.example/products/pet-fox": product_page(
+                "Pet Fox - A Face In Your Life LP", "20.00"
+            )
+        }
+    )
+
+    offers, _, _ = await find_offers(query(), engine, fetcher, rates=FX)
+
+    assert offers[0].found_via == "alpha"
+    assert offers[0].engine_label == "alpha"

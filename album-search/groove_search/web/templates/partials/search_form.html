@@ -1,0 +1,16 @@
+<section class="card" id="search-card">
+  <h2>What are you looking for?</h2>
+  {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+  <form hx-post="/search" hx-target="#results" hx-indicator="#spinner">
+    <textarea name="albums" rows="{{ [(albums_text.splitlines()|length) + 1, 5]|max }}" spellcheck="false"
+              placeholder="One album per line, e.g.&#10;Pet Fox - A face in your life">{{ albums_text }}</textarea>
+    <div class="row">
+      <button type="submit" class="primary">Find best prices</button>
+      <span id="spinner" class="htmx-indicator">searching every shop…</span>
+    </div>
+    <p class="hint">
+      <code>Artist - Title</code> works best. A bare artist name finds anything they released.
+      Add <code>(vinyl)</code> or <code>(CD)</code> to demand a format.
+    </p>
+  </form>
+</section>

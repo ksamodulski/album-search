@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import Callable
 from decimal import Decimal
 
-from .domain import AlbumQuery, AlbumResult, Availability, Format, Offer, ShopReport
+from .domain import AlbumQuery, AlbumResult, Availability, Format, Lead, Offer, ShopReport
 from .fetching import Fetcher
 from .matching import read_availability, score_offer
 from .openweb import find_offers, host_of
@@ -75,11 +75,11 @@ async def search_albums(
                 registry.record_success(shop.id, report.offers_found)
             else:
                 registry.record_failure(shop.id, report.error or "unknown")
-        web_offers, web_report = web.get(query.raw, ([], None))
+        web_offers, web_report, leads = web.get(query.raw, ([], None, ()))
         offers.extend(web_offers)
         if web_report is not None:
             reports.append(web_report)
-        results.append(_assemble(query, offers, tuple(reports), registry, max_alternatives))
+        results.append(_assemble(query, offers, tuple(reports), registry, max_alternatives, leads))
     return results
 
 
@@ -103,7 +103,7 @@ async def _search_open_web(
     fetcher: Fetcher,
     provider: SearchProvider | None,
     on_progress: Callable[[AlbumQuery, ShopReport], None] | None = None,
-) -> dict[str, tuple[list[Offer], ShopReport | None]]:
+) -> dict[str, tuple[list[Offer], ShopReport | None, tuple[Lead, ...]]]:
     """Ask the open web about every query, keyed by the user's original line.
 
     Shops the registry already covers are excluded: they have a learned recipe
@@ -113,9 +113,9 @@ async def _search_open_web(
     if provider is None:
         return {}
     known = frozenset(host_of(shop.base_url) for shop in registry.shops)
-    found: dict[str, tuple[list[Offer], ShopReport | None]] = {}
+    found: dict[str, tuple[list[Offer], ShopReport | None, tuple[Lead, ...]]] = {}
     for query in queries:
-        offers, report, _ = await find_offers(
+        offers, report, findings = await find_offers(
             query,
             provider,
             fetcher,
@@ -125,9 +125,25 @@ async def _search_open_web(
             shipping=registry.shipping,
             known_hosts=known,
         )
-        found[query.raw] = (offers, report)
+        found[query.raw] = (offers, report, _leads(findings))
         _announce(on_progress, query, report)
     return found
+
+
+def _leads(findings) -> tuple[Lead, ...]:
+    """Sellers that had the record but refused to show us a price, deduped.
+
+    One per host: Allegro answers 403 for every page we try, and a column of
+    identical refusals is noise where a single "Allegro has it" is the fact.
+    """
+    seen: set[str] = set()
+    leads: list[Lead] = []
+    for finding in findings:
+        if finding.lead is None or finding.lead.host in seen:
+            continue
+        seen.add(finding.lead.host)
+        leads.append(finding.lead)
+    return tuple(leads)
 
 
 async def _search_one_shop(
@@ -200,11 +216,12 @@ def _assemble(
     reports: tuple[ShopReport, ...],
     registry: Registry,
     max_alternatives: int,
+    leads: tuple[Lead, ...] = (),
 ) -> AlbumResult:
     """Pick the winner and its rivals from everything the shops returned."""
     buyable = [o for o in offers if o.availability is not Availability.OUT_OF_STOCK]
     if not buyable:
-        return AlbumResult(query=query, reports=reports)
+        return AlbumResult(query=query, reports=reports, leads=leads)
 
     # One offer per shop *and carrier*, so a shop cannot crowd out the field
     # and a CD never hides the vinyl the user might want.
@@ -221,6 +238,7 @@ def _assemble(
         best=ranked[0],
         alternatives=tuple(ranked[1 : 1 + max_alternatives]),
         reports=reports,
+        leads=leads,
     )
 
 

@@ -117,6 +117,18 @@ details summary { cursor: pointer; font-weight: 600; }
 .trace-what { color: var(--muted); }
 .trace-table tr.hit .trace-what { color: var(--good); }
 .trace-table tr.bad .trace-what { color: var(--bad); }
+/* One row per engine, indented under the open-web row that summarises them. */
+.trace-table tr.engine-row .trace-source { font-weight: 400; color: var(--muted); padding-left: 16px; }
+.badge.engine { color: var(--muted); background: var(--panel-2); font-size: 10px; }
+
+/* Sellers that have the record but will not show a price. Never an offer:
+   no price, no rank, and the panel says why rather than implying a deal. */
+.leads { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 8px; }
+.leads .hint { margin: 0 0 6px; }
+.lead-list { margin: 0; padding-left: 18px; font-size: 13px; }
+.lead-list li { margin: 3px 0; }
+.lead-list .lead-title { color: var(--muted); margin: 0 6px; }
+.badge.blocked { color: var(--warn); border-color: currentColor; }
 
 /* Live search progress: every source, and what it found, as it answers. */
 .searching-album { font-size: 15px; margin: 14px 0 6px; }
@@ -124,3 +136,17 @@ details summary { cursor: pointer; font-weight: 600; }
 .searching-sources .searching-source { min-width: 170px; display: inline-block; }
 .searching-sources li.pending { color: var(--muted); }
 .searching-sources li.ok .mark { color: var(--good); }
+/* Which engines answered, listed under the open web as it reports in. */
+.progress-engines { list-style: none; margin: 2px 0 6px 28px; padding: 0; font-size: 12px; }
+
+/* The streaming-library import: a tick list that fills the search box. */
+.library-limit { width: 70px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 7px;
+                 background: var(--panel-2); color: var(--ink); font: inherit; }
+.library-albums { list-style: none; margin: 12px 0; padding: 0; max-height: 360px; overflow: auto;
+                  border: 1px solid var(--line); border-radius: 8px; }
+.library-albums li { border-top: 1px solid var(--line); }
+.library-albums li:first-child { border-top: none; }
+.library-albums label { display: flex; align-items: baseline; gap: 10px; padding: 7px 12px; cursor: pointer; }
+.library-albums label:hover { background: var(--panel-2); }
+.library-albums .library-album { flex: 1; }
+.library-albums input { margin: 0; }

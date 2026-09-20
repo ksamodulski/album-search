@@ -1,0 +1,74 @@
+# SearXNG configuration for groove-search.
+#
+# This file exists because the open-web source is only as good as the set of
+# engines behind it, and that set used to live in a hand-edited file *inside*
+# a container - one `docker rm` from being lost. Mounted from the repo, it is
+# a durable part of the app instead of a demo someone set up once.
+#
+# Two things matter here and nothing else does:
+#
+#   1. `formats` must include `json`. Without it SearXNG answers HTML and the
+#      provider cannot read it. This is also why public instances are nearly
+#      all useless to us - they disable the JSON format.
+#   2. The engine list below is the coverage. Engines disagree about what
+#      exists far more than they disagree about ranking, so the point of
+#      running this at all is to ask many at once.
+#
+# An engine that captchas, times out or suspends us is not a problem: SearXNG
+# reports it in `unresponsive_engines`, groove-search prints it per engine,
+# and the others answer anyway. That is the whole fallback story - there is no
+# failover list to maintain, because every engine is asked every time.
+
+use_default_settings: true
+
+server:
+  # The official image rewrites this placeholder from $SEARXNG_SECRET on
+  # start, so no secret is committed here.
+  secret_key: "ultrasecretkey"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
+  # Nothing here types into a search box, so suggestions are wasted requests.
+  autocomplete: ""
+  default_lang: "pl"
+
+engines:
+  # Verified answering from this machine (2026-09-20). Coverage differs
+  # sharply between them: Seznam finds Czech shops nobody else lists, Yandex
+  # finds eastern European ones, Yahoo and Bing carry the marketplaces.
+  - name: bing
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: yandex
+    disabled: false
+  - name: seznam
+    disabled: false
+  - name: yep
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: startpage
+    disabled: false
+  # Google and DuckDuckGo captcha this host more often than not, and Brave
+  # suspends it. They stay enabled on purpose: when they do answer they are
+  # the best of the lot, and when they refuse, the result says so by name
+  # rather than quietly shrinking.
+  - name: google
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+
+  # Wikidata and Wikipedia cannot sell a record and only cost time.
+  - name: wikidata
+    disabled: true
+  - name: wikipedia
+    disabled: true

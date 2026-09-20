@@ -81,6 +81,45 @@ class AlbumQuery:
 
 
 @dataclass(frozen=True, slots=True)
+class SavedAlbum:
+    """An album somebody added to their streaming library.
+
+    An input, not a result: the point of reading a library is to save the user
+    retyping a want-list they have already built somewhere else. It turns into
+    an `AlbumQuery` through exactly the same `normalize` path as a typed line,
+    so nothing downstream can tell the two apart - and nothing downstream has
+    to learn what a streaming service is.
+    """
+
+    source: str
+    id: str
+    artist: str
+    title: str
+    # ISO 8601, as the service gave it. Empty when the service does not say
+    # when the album was added, which is the only honest answer then.
+    added_at: str = ""
+    url: str = ""
+    image_url: str | None = None
+
+    @property
+    def query_line(self) -> str:
+        """The album as a line the user could have typed themselves.
+
+        Edition noise ("(Deluxe Edition)", "- Remastered 2011") is deliberately
+        left in: `text.significant()` strips it from *both* sides of a
+        comparison later, and a title cleaned only on this side would fold
+        differently from the shop's - the exact fault that made "Burial -
+        Untrue EP" unmatchable.
+        """
+        return f"{self.artist} - {self.title}" if self.artist and self.title else (self.artist or self.title)
+
+    @property
+    def added_on(self) -> str:
+        """Just the date, for a UI that has one line per album."""
+        return self.added_at[:10]
+
+
+@dataclass(frozen=True, slots=True)
 class RawOffer:
     """One product block as extracted from a shop's search page.
 
@@ -138,10 +177,25 @@ class Offer:
     # is a broken recipe, the open web missing one is engine coverage - so the
     # reader cannot diagnose a surprising result without being told which.
     from_open_web: bool = False
+    # Which engine put this page in front of us, for an open-web offer. Engines
+    # disagree about what exists far more than they disagree about ranking, so
+    # "only Qwant ever finds this shop" is a fact worth being able to read off
+    # a result rather than infer from two runs.
+    found_via: str = ""
 
     @property
     def source_label(self) -> str:
         return "web search" if self.from_open_web else "known shop"
+
+    @property
+    def engine_label(self) -> str:
+        """The engine that found this, for a UI to show beside the source.
+
+        Deliberately separate from `source_label`: which *kind* of source
+        found an offer and which *engine* did are two different questions,
+        and only the first one has an answer for every offer.
+        """
+        return self.found_via if self.from_open_web else ""
 
     @property
     def comparable_amount(self) -> Decimal:
@@ -165,6 +219,58 @@ OPEN_WEB_SOURCE_ID = "openweb"
 
 
 @dataclass(frozen=True, slots=True)
+class Lead:
+    """A page that is this record, but whose price we were not allowed to read.
+
+    Some of the biggest sellers refuse us outright: Allegro answers 403 to
+    plain HTTP and to a headless browser alike, and its API grants offer
+    search only to partner accounts. Discogs and Boomkat do the same through
+    Cloudflare. Dropping those on the floor tells a Polish buyer "not
+    available" about a record the country's dominant marketplace is selling.
+
+    A lead is deliberately *not* an `Offer`: it has no price, it is never
+    ranked, and it never competes for "best". It is a link that says where
+    else to look, which is the most that can honestly be said about a page
+    nobody let us open.
+    """
+
+    host: str
+    url: str
+    title: str
+    reason: str
+    format: Format = Format.ANY
+
+
+@dataclass(frozen=True, slots=True)
+class EngineReport:
+    """What one search engine contributed to one album's open-web search.
+
+    A merged search asks several engines and shows their union, which hides
+    exactly the thing a user needs when a result surprises them: whether an
+    engine found nothing or was never really asked. A captcha, a throttle and
+    an honest empty answer all look identical in the union, so each engine
+    states its own case here.
+    """
+
+    name: str
+    hits: int = 0
+    # Why this engine contributed nothing, in its own words. None means it
+    # answered normally - including answering "no results", which is a real
+    # answer and not a fault.
+    note: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.note is None
+
+    @property
+    def summary(self) -> str:
+        if self.note:
+            return f"{self.name}: {self.note}"
+        return f"{self.name}: {self.hits} hit{'' if self.hits == 1 else 's'}"
+
+
+@dataclass(frozen=True, slots=True)
 class ShopReport:
     """What one shop contributed to one album's search - including failure."""
 
@@ -172,10 +278,17 @@ class ShopReport:
     shop_name: str
     offers_found: int = 0
     error: str | None = None
+    # Only the open web fills this in: one entry per engine it asked.
+    engines: tuple[EngineReport, ...] = ()
 
     @property
     def ok(self) -> bool:
         return self.error is None
+
+    @property
+    def engines_used(self) -> str:
+        """One line naming every engine asked and what each one gave back."""
+        return "; ".join(e.summary for e in self.engines)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +299,9 @@ class AlbumResult:
     best: Offer | None = None
     alternatives: tuple[Offer, ...] = ()
     reports: tuple[ShopReport, ...] = ()
+    # Sellers that certainly have this record but would not let us read a
+    # price. Shown beside the offers, never among them.
+    leads: tuple[Lead, ...] = ()
 
     @property
     def available(self) -> bool:

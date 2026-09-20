@@ -8,16 +8,22 @@ import sys
 from pathlib import Path
 
 from .discovery import TOP_N, apply, discover, recalibrate
+from .library import DEFAULT_LIMIT, SOURCES, as_lines, config_for, display_name, parse_picks
 from .normalize import normalize_lines
+from .oauth import LoginFlow, OAuthError
 from .registry import RECALIBRATE_AFTER, Registry
 from .runtime import (
     REGISTRY_PATH,
     SETUP_TTL,
     build_browser_fetcher,
     build_fetcher,
+    build_library,
     build_search_provider,
     browser_hosts_for,
+    configured_sources,
+    library_hint,
     search_provider_hint,
+    token_store,
 )
 from .fetching import BrowserFetcher, close_fetcher
 from .search import search_albums
@@ -44,6 +50,18 @@ def main(argv: list[str] | None = None) -> int:
         "--no-web", action="store_true", help="search only the calibrated shops, not the open web"
     )
     p_search.add_argument(
+        "--shop-price", action="store_true", help="rank on the listed price instead of the delivered cost"
+    )
+
+    p_lib = sub.add_parser("library", help="albums you recently added on Spotify or TIDAL")
+    p_lib.add_argument("source", nargs="?", choices=SOURCES, help="which account to read (default: the configured one)")
+    p_lib.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help=f"how many recent albums (default: {DEFAULT_LIMIT})")
+    p_lib.add_argument(
+        "--pick", help='search for these, by their printed number: "1,3,5-8", or "all"'
+    )
+    p_lib.add_argument("--logout", action="store_true", help="forget the stored token for this account")
+    p_lib.add_argument("--no-web", action="store_true", help="search only the calibrated shops, not the open web")
+    p_lib.add_argument(
         "--shop-price", action="store_true", help="rank on the listed price instead of the delivered cost"
     )
 
@@ -75,6 +93,8 @@ async def _dispatch(args) -> int:
             return await _setup(args, registry)
         case "search":
             return await _search(args, registry)
+        case "library":
+            return await _library(args, registry)
         case "doctor":
             return _doctor(registry)
         case "recalibrate":
@@ -123,10 +143,20 @@ async def _setup(args, registry: Registry) -> int:
 
 
 async def _search(args, registry: Registry) -> int:
+    text = args.file.read_text(encoding="utf-8") if args.file else "\n".join(args.albums)
+    return await _run_search(text, args, registry)
+
+
+async def _run_search(text: str, args, registry: Registry) -> int:
+    """Search for a block of album lines, however they were gathered.
+
+    The library command hands its picked albums to exactly this, so an album
+    imported from Spotify travels the same path as one somebody typed - same
+    normalization, same shops, same open web, same ranking.
+    """
     if not registry.is_configured:
         print(f"{RED}No shops configured.{RESET} Run: groove setup")
         return 1
-    text = args.file.read_text(encoding="utf-8") if args.file else "\n".join(args.albums)
     queries = normalize_lines(text)
     if not queries:
         print("Nothing to search for.")
@@ -145,24 +175,51 @@ async def _search(args, registry: Registry) -> int:
 
     for result in results:
         print(f"\n{BOLD}{result.query.label}{RESET}")
+        _print_engines(result)
         if not result.available:
             print(f"  {YELLOW}Not available{RESET} - checked {result.shops_searched} shop(s)")
             for failed in result.shops_failed:
                 print(f"    {DIM}{failed.shop_name}: {failed.error}{RESET}")
+            _print_leads(result)
             continue
         best = result.best
         print(f"  {GREEN}BEST{RESET} {_headline(best, args):>12}  {best.shop_name:20} {best.format:5} {best.title[:56]}")
         _print_breakdown(best, args)
-        print(f"       {DIM}{best.url}{RESET}")
+        print(f"       {DIM}{best.url}{_via(best)}{RESET}")
         for alt in result.alternatives:
             print(f"       {_headline(alt, args):>12}  {alt.shop_name:20} {alt.format:5} {_delta(alt, best, args)}")
             _print_breakdown(alt, args)
-            print(f"       {DIM}{alt.url}{RESET}")
+            print(f"       {DIM}{alt.url}{_via(alt)}{RESET}")
         saved = result.savings_vs_worst()
         if saved and saved > 0:
             basis = "listed price" if args.shop_price else "delivered cost"
             print(f"       {DIM}best offer saves {saved:.0f}% on {basis} against the priciest found{RESET}")
+        _print_leads(result)
     return 0
+
+
+def _via(offer) -> str:
+    """Which engine found an open-web offer, for the line under its URL."""
+    return f"  (via {offer.engine_label})" if offer.engine_label else ""
+
+
+def _print_engines(result) -> None:
+    """Name the engines that answered, and what each one gave back.
+
+    A thin result has two very different causes - a record nobody sells, and
+    every engine refusing us at once - and only this line tells them apart.
+    """
+    web = result.web_report
+    if web is None or not web.engines:
+        return
+    print(f"  {DIM}engines: {web.engines_used}{RESET}")
+
+
+def _print_leads(result) -> None:
+    """Sellers that have the record but would not show us a price."""
+    for lead in result.leads:
+        print(f"  {YELLOW}listed at{RESET} {lead.host} {DIM}({lead.reason}; no price readable){RESET}")
+        print(f"       {DIM}{lead.url}{RESET}")
 
 
 def _headline(offer, args) -> str:
@@ -194,6 +251,92 @@ def _delta(alt, best, args) -> str:
             return "(other currency)"
         return f"(+{alt.price.percent_above(best.price):.0f}%)"
     return f"(+{alt.landed.total.percent_above(best.landed.total):.0f}%)"
+
+
+async def _library(args, registry: Registry) -> int:
+    """List the albums recently added to a streaming account, and search picks."""
+    source = args.source or _only_configured()
+    if source is None:
+        print(f"{RED}No streaming account configured.{RESET} {DIM}{library_hint()}{RESET}")
+        return 1
+    if args.logout:
+        gone = token_store().forget(source)
+        print(f"Signed out of {display_name(source)}." if gone else f"Not signed in to {display_name(source)}.")
+        return 0
+
+    library = build_library(source, registry)
+    if library is None:
+        print(f"{RED}{display_name(source)} is not configured.{RESET} {DIM}{library_hint()}{RESET}")
+        return 1
+    try:
+        if not library.signed_in and not await _login(source):
+            return 1
+        albums = await library.recent(args.limit)
+    finally:
+        await library.aclose()
+
+    if not albums:
+        reason = library.last_error or "nothing saved there yet"
+        print(f"{YELLOW}No albums read from {display_name(source)}{RESET} - {reason}")
+        return 1
+    if library.last_error:
+        # A partial answer is still worth showing; it just must not look whole.
+        print(f"{YELLOW}Partial list{RESET} {DIM}({library.last_error}){RESET}\n")
+
+    if args.pick:
+        picked = [albums[i] for i in parse_picks(args.pick, len(albums))]
+        if not picked:
+            print(f"{RED}Nothing matched {args.pick!r}{RESET} - pick from 1-{len(albums)}.")
+            return 1
+        print(f"{BOLD}Searching for {len(picked)} album(s) from your {display_name(source)} library{RESET}")
+        return await _run_search(as_lines(picked), args, registry)
+
+    print(f"{BOLD}Last {len(albums)} album(s) added to {display_name(source)}{RESET}\n")
+    width = len(str(len(albums)))
+    for number, album in enumerate(albums, 1):
+        print(f"  {number:>{width}}. {album.query_line}  {DIM}{album.added_on}{RESET}")
+    print(
+        f"\n{DIM}Search some of them:  groove library {source} --pick 1,3,5-8"
+        f"   (or --pick all){RESET}"
+    )
+    return 0
+
+
+def _only_configured() -> str | None:
+    """The source to use when the user named none: theirs, if there is one."""
+    configured = configured_sources()
+    if len(configured) == 1:
+        return configured[0]
+    if configured:
+        print(f"{YELLOW}Several accounts configured{RESET} ({', '.join(configured)}) - name one.")
+    return None
+
+
+async def _login(source: str) -> bool:
+    """Send the user through the consent page and keep the token that comes back.
+
+    The URL is printed as well as opened: a browser that does not launch (a
+    remote shell, a machine with no default handler) must not leave the user
+    staring at a silent wait.
+    """
+    import webbrowser
+
+    config = config_for(source)
+    if config is None:  # pragma: no cover - guarded by the caller
+        return False
+    flow = LoginFlow(config=config)
+    print(f"{BOLD}Sign in to {display_name(source)}{RESET} - a browser tab should open. If it does not, visit:")
+    print(f"  {flow.url}\n")
+    webbrowser.open(flow.url)
+    print(f"{DIM}Waiting for the redirect back to 127.0.0.1:{flow.port}...{RESET}")
+    try:
+        await flow.complete(token_store())
+    except OAuthError as exc:
+        print(f"{RED}Sign-in failed:{RESET} {exc}")
+        print(f"{DIM}{library_hint()}{RESET}")
+        return False
+    print(f"{GREEN}Signed in to {display_name(source)}.{RESET}\n")
+    return True
 
 
 def _doctor(registry: Registry) -> int:

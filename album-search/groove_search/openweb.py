@@ -24,13 +24,22 @@ import re
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlsplit
 
-from .domain import OPEN_WEB_SOURCE_ID, AlbumQuery, Format, Offer, RawOffer, ShopReport
+from .domain import (
+    OPEN_WEB_SOURCE_ID,
+    AlbumQuery,
+    EngineReport,
+    Format,
+    Lead,
+    Offer,
+    RawOffer,
+    ShopReport,
+)
 from .fetching import Fetcher
 from .matching import read_availability, score_offer
 from .pricing import parse_money
 from .product import extract_product
 from .shipping import ShippingRates, landed_cost
-from .websearch import DEFAULT_LIMIT, SearchProvider, usable
+from .websearch import DEFAULT_LIMIT, SearchProvider, reports_of, usable
 
 # How many candidate pages to actually open per album. Each is a live request
 # to a stranger's server, so this is a politeness budget as much as a speed one.
@@ -63,6 +72,19 @@ _TLD_COUNTRY: dict[str, str] = {
 # currency can only ever make an offer dearer, never cheaper.
 _CURRENCY_COUNTRY: dict[str, str] = {"GBP": "GB", "USD": "US", "EUR": "EU", "CZK": "CZ"}
 
+# Hosts whose country no suffix can give. Amazon is the case that matters: it
+# quotes a US record in PLN to a Polish visitor, so neither the .com nor the
+# currency says where the parcel starts. The arithmetic does not change - an
+# unknown origin is already costed as the world zone plus import VAT, which is
+# exactly what a US parcel costs - but the reader is shown "from US" instead
+# of nothing, and a fact beats a blank.
+#
+# Only retailers that really do ship from one country belong here. eBay,
+# Discogs and Bandcamp are deliberately absent: their sellers are scattered
+# across the world, so a country here would be an invention displayed to the
+# user as a fact, and "unknown, costed as worst case" is the honest answer.
+_HOST_COUNTRY: dict[str, str] = {"amazon.com": "US"}
+
 # Paths that list many records rather than sell one. A Shopify product lives
 # at /collections/<x>/products/<y>, so a product segment overrides this.
 _TAXONOMY_PATH = re.compile(
@@ -70,13 +92,27 @@ _TAXONOMY_PATH = re.compile(
     r"producent|search|szukaj|listing|oferty|tag|tags|genre|gatunek|series)(/|$)",
     re.IGNORECASE,
 )
-_PRODUCT_PATH = re.compile(r"/(products?|produkt|item|release|album|p)(/|$)", re.IGNORECASE)
+_PRODUCT_PATH = re.compile(
+    r"/(products?|produkt|item|itm|release|album|dp|gp/product|p)(/|$)", re.IGNORECASE
+)
 # A shop's own search results, which engines index freely. Amazon answers
 # /whitest-boy-alive/s?k=... - a path test alone never catches that, but the
 # query string always gives it away.
 _SEARCH_PARAMS = frozenset(
-    {"k", "q", "s", "query", "search", "keyword", "keywords", "text", "string", "phrase", "phrases"}
+    {
+        "k", "q", "s", "query", "search", "keyword", "keywords", "text", "string",
+        "phrase", "phrases",
+        # The marketplaces spell it their own way: Amazon's refinement
+        # parameter and eBay's keyword one both mark a results grid that no
+        # path test catches. Both were live false positives - a "price" read
+        # off such a page belongs to whichever record happened to be first.
+        "rh", "_nkw", "field-keywords",
+    }
 )
+# Marketplace result grids whose *path* is the giveaway. Amazon's /s and
+# eBay's /sch and /b are search and browse pages; Amazon's /clp is a curated
+# list. None of them sell the one record, and all of them carry prices.
+_GRID_PATH = re.compile(r"/(s|sch|b|clp|bn_\w+|shop)(/|$)", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +127,10 @@ class WebFinding:
     url: str
     verdict: str
     offer: Offer | None = None
+    engine: str = ""
+    # Set when the page was refused but the engine's own title says this is
+    # the record: the seller is worth naming even without a price.
+    lead: Lead | None = None
 
 
 async def find_offers(
@@ -112,18 +152,22 @@ async def find_offers(
     """
     phrases = _phrases(query)
     hits: list = []
+    engines: list = []
     for phrase in phrases:
         hits.extend(await provider.search(phrase, limit=DEFAULT_LIMIT))
+        engines = _merge_engine_reports(engines, reports_of(provider))
     candidates = _spread(
         [h for h in usable(hits) if h.host not in known_hosts and not _is_listing(h.url)],
         max_pages,
+        home=location,
     )
     if not candidates:
         # An engine that refused us must not be reported as an album nobody
         # sells - those are opposite facts and only one of them is the user's
         # problem to act on.
         refusal = getattr(provider, "last_error", None)
-        return [], ShopReport(SOURCE_ID, SOURCE_NAME, offers_found=0, error=refusal), []
+        report = ShopReport(SOURCE_ID, SOURCE_NAME, offers_found=0, error=refusal, engines=tuple(engines))
+        return [], report, []
 
     gate = asyncio.Semaphore(CONCURRENCY)
 
@@ -134,18 +178,46 @@ async def find_offers(
     findings = list(await asyncio.gather(*(visit(h) for h in candidates)))
     offers = [f.offer for f in findings if f.offer is not None]
     error = None if offers else _why_nothing(findings)
-    return offers, ShopReport(SOURCE_ID, SOURCE_NAME, offers_found=len(offers), error=error), findings
+    report = ShopReport(
+        SOURCE_ID, SOURCE_NAME, offers_found=len(offers), error=error, engines=tuple(engines)
+    )
+    return offers, report, findings
+
+
+def _merge_engine_reports(existing: list, latest) -> list:
+    """Keep a running per-engine tally across the two phrases we search.
+
+    Each phrase is a fresh call, so an engine's own report describes only the
+    last one. Summing them is what lets the result say "DuckDuckGo: 24 hits"
+    for the work actually done, and keeps a throttle that struck on the second
+    phrase from erasing the first phrase's hits.
+    """
+    tallies = {r.name: r for r in existing}
+    for report in latest:
+        prior = tallies.get(report.name)
+        if prior is None:
+            tallies[report.name] = report
+            continue
+        tallies[report.name] = EngineReport(
+            report.name,
+            prior.hits + report.hits,
+            # A refusal is worth reporting even if the other phrase worked;
+            # hits above say plainly that it was not a total outage.
+            report.note or prior.note,
+        )
+    return list(tallies.values())
 
 
 async def _judge(hit, query, fetcher, location, currency, rates, shipping) -> WebFinding:
     """Open one candidate page and decide whether it is really this record."""
     page = await fetcher.get(hit.url)
     if not page.ok:
-        return WebFinding(hit.url, page.error or f"HTTP {page.status}")
+        reason = page.error or f"HTTP {page.status}"
+        return WebFinding(hit.url, reason, engine=hit.engine, lead=_lead(hit, query, reason))
 
     facts = extract_product(page.html, url=hit.url)
     if facts is None:
-        return WebFinding(hit.url, "no price found on the page")
+        return WebFinding(hit.url, "no price found on the page", engine=hit.engine)
 
     raw = RawOffer(
         shop_id=hit.host,
@@ -157,13 +229,13 @@ async def _judge(hit, query, fetcher, location, currency, rates, shipping) -> We
     )
     verdict = score_offer(query, raw)
     if not verdict.matched:
-        return WebFinding(hit.url, verdict.reason)
+        return WebFinding(hit.url, verdict.reason, engine=hit.engine)
 
     price = parse_money(facts.price_text, default_currency="")
     if price is None or not price.currency:
         # A price with no currency is unusable across borders and we have no
         # shop record to borrow a default from.
-        return WebFinding(hit.url, "price without a currency")
+        return WebFinding(hit.url, "price without a currency", engine=hit.engine)
 
     country = _country_of(hit.host, price.currency)
     cost = landed_cost(
@@ -188,16 +260,55 @@ async def _judge(hit, query, fetcher, location, currency, rates, shipping) -> We
         country=country,
         landed=cost,
         from_open_web=True,
+        found_via=hit.engine,
     )
-    return WebFinding(hit.url, f"matched ({facts.source})", offer)
+    return WebFinding(hit.url, f"matched ({facts.source})", offer, engine=hit.engine)
 
 
-def _spread(hits: list, max_pages: int) -> list:
+def _lead(hit, query: AlbumQuery, reason: str) -> Lead | None:
+    """Name a seller we were refused by, but only if this really is the record.
+
+    The only evidence available is the engine's own title for the page, so the
+    bar is the same strict matcher an offer has to pass - a blocked page that
+    merely mentions the artist stays unmentioned. The search-result title also
+    has to look like a product rather than a listing grid ("Radiohead In
+    Rainbows - Niska cena na Allegro" is an advert for a search page).
+    """
+    if not _is_blocked(reason):
+        return None
+    verdict = score_offer(query, RawOffer(shop_id=hit.host, title_text=hit.title, price_text="", url=hit.url))
+    if not verdict.matched:
+        return None
+    return Lead(host=hit.host, url=hit.url, title=hit.title, reason=reason, format=verdict.format)
+
+
+# What "they would not let us read it" looks like coming back from a fetcher.
+# A 404 is not here on purpose: that is a page that does not exist, not a
+# seller hiding a price, and there is nothing to send the user to.
+_BLOCKED = ("403", "401", "429", "blocked by robots.txt", "browser unavailable")
+
+
+def _is_blocked(reason: str) -> bool:
+    lowered = reason.lower()
+    return any(marker in lowered for marker in _BLOCKED)
+
+
+def _spread(hits: list, max_pages: int, *, home: str = "") -> list:
     """Take the best candidates while keeping the field broad.
 
-    Order is preserved - the engine's ranking is still respected - but no
-    single shop may supply more than `MAX_PER_HOST` of the pages we open.
+    Order is mostly preserved - the engine's ranking is still respected - but
+    no single shop may supply more than `MAX_PER_HOST` of the pages we open,
+    and a shop in the buyer's own country goes first.
+
+    Domestic first is not a patriotic preference, it is the ranking rule
+    working backwards. Postage and import VAT add ~100 PLN to a parcel from
+    outside the EU, so a domestic listing wins the delivered-cost comparison
+    at prices a foreign one cannot touch. The fetch budget is eight pages;
+    spending it on eight foreign candidates while a Polish marketplace sits
+    at rank nine buys pages that were never going to win.
     """
+    if home:
+        hits = sorted(hits, key=lambda h: 0 if _country_of(h.host, "") == home.upper() else 1)
     per_host: dict[str, int] = {}
     kept = []
     for hit in hits:
@@ -235,7 +346,12 @@ def _is_listing(url: str) -> bool:
     parts = urlsplit(url)
     if _SEARCH_PARAMS & set(parse_qs(parts.query)):
         return True
-    return bool(_TAXONOMY_PATH.search(parts.path)) and not _PRODUCT_PATH.search(parts.path)
+    if _PRODUCT_PATH.search(parts.path):
+        # A product segment settles it: a Shopify product lives under
+        # /collections/<x>/products/<y>, and an Amazon record under
+        # /<slug>/dp/<asin>, both of which read as taxonomy otherwise.
+        return False
+    return bool(_TAXONOMY_PATH.search(parts.path) or _GRID_PATH.search(parts.path))
 
 
 def _country_of(host: str, currency: str) -> str | None:
@@ -247,6 +363,8 @@ def _country_of(host: str, currency: str) -> str | None:
     suffix = host.rsplit(".", 1)[-1] if "." in host else ""
     if suffix in _TLD_COUNTRY:
         return _TLD_COUNTRY[suffix]
+    if host in _HOST_COUNTRY:
+        return _HOST_COUNTRY[host]
     return _CURRENCY_COUNTRY.get(currency)
 
 

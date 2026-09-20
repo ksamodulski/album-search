@@ -213,3 +213,124 @@ def test_the_generic_key_still_works_alone(clean_env):
     provider = from_env()
 
     assert [type(p).__name__ for p in provider.providers] == ["BraveSearch", "DuckDuckGoSearch"]
+
+
+# --- Which engine answered, and what it said -------------------------------
+#
+# A merged search shows a union, which hides the one thing a surprised user
+# needs: whether an engine found nothing or was never really asked. These
+# cover the per-engine accounting that makes the union readable.
+
+
+@pytest.mark.anyio
+async def test_every_hit_carries_the_engine_that_found_it():
+    """An offer's provenance starts here: no tag on the hit, none anywhere."""
+    merged = MergedSearch((FakeSearch(name="alpha", default=hits("https://a.example/1")),
+                           FakeSearch(name="beta", default=hits("https://b.example/1"))))
+
+    found = await merged.search(PHRASE)
+
+    assert {h.url: h.engine for h in found} == {
+        "https://a.example/1": "alpha",
+        "https://b.example/1": "beta",
+    }
+
+
+@pytest.mark.anyio
+async def test_reports_name_every_engine_asked_with_its_tally():
+    merged = MergedSearch((FakeSearch(name="alpha", default=hits("https://a.example/1", "https://a.example/2")),
+                           FakeSearch(name="beta", default=hits("https://b.example/1"))))
+
+    await merged.search(PHRASE)
+
+    assert [(r.name, r.hits, r.note) for r in merged.reports()] == [
+        ("alpha", 2, None),
+        ("beta", 1, None),
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_refusing_engine_is_named_beside_the_one_that_worked():
+    """The whole point: a good result must not hide a throttled engine."""
+    refused = FakeSearch(name="throttled")
+    refused.last_error = "rate-limiting us"
+    merged = MergedSearch((FakeSearch(name="working", default=hits("https://a.example/1")), refused))
+
+    await merged.search(PHRASE)
+    reports = {r.name: r for r in merged.reports()}
+
+    assert reports["working"].ok and reports["working"].hits == 1
+    assert not reports["throttled"].ok
+    assert "rate-limiting" in reports["throttled"].note
+    # ... and the merged search itself stays quiet, because a user with
+    # results in hand can do nothing about another engine's outage.
+    assert merged.last_error is None
+
+
+@pytest.mark.anyio
+async def test_an_abandoned_engine_says_so_rather_than_reporting_nothing():
+    """A straggler is dropped for speed; silence about it would be a lie."""
+    merged = MergedSearch((engine("https://a.example/1"), Slow()), patience=0.05)
+
+    await merged.search(PHRASE)
+    slow = [r for r in merged.reports() if "Slow" in r.name or "too slow" in (r.note or "")]
+
+    assert slow, "the abandoned engine must appear in the reports"
+    assert "abandoned" in slow[0].note
+
+
+@pytest.mark.anyio
+async def test_searxng_reports_its_upstream_engines_not_itself(monkeypatch):
+    """SearXNG is a dozen engines wearing one coat; the coat is not the fact."""
+    payload = {
+        "results": [
+            {"url": "https://a.example/1", "title": "one", "engine": "bing"},
+            {"url": "https://a.example/2", "title": "two", "engine": "bing"},
+            {"url": "https://b.example/1", "title": "three", "engine": "qwant"},
+        ],
+        "unresponsive_engines": [["google", "CAPTCHA"], ["brave", "too many requests"]],
+    }
+    provider = SearxngSearch()
+    monkeypatch.setattr(provider, "_ensure_client", lambda: _Canned(payload))
+
+    found = await provider.search(PHRASE)
+
+    assert [h.engine for h in found] == ["searxng/bing", "searxng/bing", "searxng/qwant"]
+    assert [(r.name, r.hits, r.note) for r in provider.reports()] == [
+        ("searxng/bing", 2, None),
+        ("searxng/qwant", 1, None),
+        ("searxng/google", 0, "CAPTCHA"),
+        ("searxng/brave", 0, "too many requests"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_an_empty_searxng_blames_its_engines_by_name():
+    """"Nothing for sale" and "every engine refused" must never read alike."""
+    payload = {"results": [], "unresponsive_engines": [["google", "CAPTCHA"]]}
+    provider = SearxngSearch()
+    provider._ensure_client = lambda: _Canned(payload)  # type: ignore[method-assign]
+
+    assert await provider.search(PHRASE) == []
+    assert "CAPTCHA" in provider.last_error
+
+
+class _Canned:
+    """The smallest thing that behaves like the httpx client SearXNG uses."""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def get(self, url, params=None):
+        return _CannedResponse(self.payload)
+
+
+class _CannedResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload

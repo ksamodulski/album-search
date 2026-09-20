@@ -298,3 +298,61 @@ async def test_a_broken_progress_callback_does_not_lose_the_search(setup):
     )
 
     assert results[0].available
+
+
+# --- Sellers that refuse us, reported rather than dropped -------------------
+
+
+@pytest.mark.anyio
+async def test_a_blocked_marketplace_reaches_the_result_as_a_lead(setup):
+    """Allegro sells the record and blocks us; "Not available" would be false."""
+    registry, fetcher = setup
+    blocked = "https://allegro.pl/produkt/pet-fox"
+    fetcher.pages[blocked] = None  # a FakeFetcher miss is a 404, so force a 403
+    engine = FakeSearch(default=[SearchHit("Pet Fox - A Face In Your Life LP", blocked)])
+    fetcher.miss_status, fetcher.miss_error = 403, "HTTP 403"
+
+    results = await search_albums(
+        normalize_lines("Pet Fox - A face in your life"), registry, fetcher, provider=engine
+    )
+
+    leads = results[0].leads
+    assert [lead.host for lead in leads] == ["allegro.pl"]
+    # A lead is not an offer: it has no price and never competes for best.
+    assert all(offer.shop_id != "allegro.pl" for offer in results[0].offers)
+
+
+@pytest.mark.anyio
+async def test_one_lead_per_seller_however_many_pages_it_blocked(setup):
+    """Allegro answers 403 for every URL; a column of them is noise."""
+    registry, fetcher = setup
+    pages = ["https://allegro.pl/produkt/one", "https://allegro.pl/produkt/two"]
+    engine = FakeSearch(
+        default=[
+            SearchHit("Pet Fox - A Face In Your Life LP", pages[0]),
+            SearchHit("Pet Fox - A Face In Your Life 2LP", pages[1]),
+        ]
+    )
+    # The fixture's fetcher answers unknown URLs with an empty grid, so the
+    # refusal has to be stated for both pages.
+    for url in pages:
+        fetcher.pages[url] = None
+    fetcher.miss_status, fetcher.miss_error = 403, "HTTP 403"
+
+    results = await search_albums(
+        normalize_lines("Pet Fox - A face in your life"), registry, fetcher, provider=engine
+    )
+
+    assert len(results[0].leads) == 1
+
+
+@pytest.mark.anyio
+async def test_the_result_says_which_engines_were_asked(setup):
+    registry, fetcher = setup
+    engine = FakeSearch(name="alpha", default=[SearchHit("nothing here", "https://nowhere.example/products/x")])
+
+    results = await search_albums(
+        normalize_lines("Pet Fox - A face in your life"), registry, fetcher, provider=engine
+    )
+
+    assert "alpha" in results[0].web_report.engines_used

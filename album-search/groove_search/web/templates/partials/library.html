@@ -1,0 +1,54 @@
+<div id="library-list"
+     {% if state == 'connecting' %}hx-get="/library/{{ source }}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %}>
+
+  {% if state == 'unconfigured' %}
+    <p class="hint">{{ hint }}</p>
+
+  {% elif state == 'connecting' %}
+    <p>
+      <a href="{{ login.url }}" target="_blank" rel="noopener" class="buy">Open the {{ source|service }} consent page</a>
+    </p>
+    <p class="hint">
+      Waiting for {{ source|service }} to send you back… the tab will say when you can close it,
+      and this list fills in by itself.
+    </p>
+
+  {% elif state == 'disconnected' %}
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <p class="hint">
+      groove-search reads the albums you added — nothing else — and the token stays on this
+      machine, in <code>var/tokens/</code>.
+    </p>
+    <button class="primary" hx-post="/library/{{ source }}/connect"
+            hx-target="#library-list" hx-swap="outerHTML">Connect {{ source|service }}</button>
+
+  {% elif state == 'empty' %}
+    <p class="hint">{{ error or 'Nothing saved to this account yet.' }}</p>
+    <button hx-post="/library/{{ source }}/logout" hx-target="#library-list" hx-swap="outerHTML">Disconnect</button>
+
+  {% else %}
+    {% if error %}<p class="error">Partial list: {{ error }}</p>{% endif %}
+    <form hx-post="/library/pick" hx-target="#search-card" hx-swap="outerHTML">
+      <input type="hidden" name="source" value="{{ source }}"/>
+      <ul class="library-albums">
+        {% for album in albums %}
+          <li>
+            <label>
+              <input type="checkbox" name="picked" value="{{ album.query_line }}"/>
+              <span class="library-album">{{ album.query_line }}</span>
+              <span class="hint">{{ album.added_on }}</span>
+            </label>
+          </li>
+        {% endfor %}
+      </ul>
+      <div class="row">
+        <button type="submit" class="primary">Add ticked to the search box</button>
+        <button type="button" hx-post="/library/{{ source }}/logout"
+                hx-target="#library-list" hx-swap="outerHTML">Disconnect</button>
+      </div>
+      <p class="hint">
+        Ticking only fills the box — you still review the lines and press “Find best prices”.
+      </p>
+    </form>
+  {% endif %}
+</div>
